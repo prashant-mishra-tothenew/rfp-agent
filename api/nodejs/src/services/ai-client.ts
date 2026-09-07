@@ -34,7 +34,28 @@ function postJson<T>(
         });
         res.on("end", () => {
           if ((res.statusCode ?? 500) >= 400) {
-            reject(new Error(`AI service error (${res.statusCode}): ${text}`));
+            let message = text;
+            try {
+              const parsed = JSON.parse(text) as {
+                detail?: string | Array<{ msg?: string }>;
+                error?: string;
+              };
+              if (typeof parsed.detail === "string") {
+                message = parsed.detail;
+              } else if (Array.isArray(parsed.detail)) {
+                message = parsed.detail
+                  .map((item) => item.msg)
+                  .filter(Boolean)
+                  .join("; ");
+              } else if (parsed.error) {
+                message = parsed.error;
+              }
+            } catch {
+              // keep raw text
+            }
+            reject(
+              new Error(`AI service error (${res.statusCode}): ${message}`)
+            );
             return;
           }
           try {

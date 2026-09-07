@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from pydantic import BaseModel
+from pymilvus.exceptions import MilvusException
 
 from app.agents.compliance_checker import check_compliance
 from app.agents.knowledge_agent import retrieve_knowledge
@@ -96,6 +97,12 @@ async def run_pipeline(req: PipelineRequest):
     parsed = parse_document(req.file_path)
     try:
         result = await run_full_pipeline(parsed["text"], filters=req.filters)
+    except MilvusException as exc:
+        raise HTTPException(
+            503,
+            "Milvus vector database is unavailable. Start it with: "
+            "docker compose up -d etcd minio milvus",
+        ) from exc
     except httpx.ReadTimeout:
         raise HTTPException(
             504,
