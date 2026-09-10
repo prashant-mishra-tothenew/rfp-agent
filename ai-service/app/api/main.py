@@ -14,12 +14,8 @@ from app.agents.response_agent import generate_response
 from app.agents.rfp_analyzer import analyze_rfp
 from app.config import settings
 from app.documents.parser import parse_document
-from app.proposal.generator import (
-    convert_to_pdf,
-    generate_proposal_content,
-    render_docx,
-)
-from app.pipeline.progress import get_job, init_job
+from app.proposal.generator import build_proposal_files
+from app.pipeline.progress import complete_job, fail_job, get_job, init_job, update_job
 from app.providers.ollama_provider import ollama_provider
 from app.rag.milvus_store import milvus_store
 
@@ -63,6 +59,7 @@ class ProposalRequest(BaseModel):
     requirements: list[dict[str, Any]]
     responses: list[dict[str, Any]]
     compliance: dict[str, Any]
+    job_id: str | None = None
 
 
 @app.get("/health")
@@ -189,24 +186,37 @@ async def ingest_document(req: IngestRequest):
     return {"ingested": count, "document_id": req.document_id}
 
 
+def _proposal_progress(job_id: str | None, **fields: Any) -> None:
+    update_job(job_id, **fields)
+
+
 @app.post("/ai/proposal/generate")
 async def generate_proposal(req: ProposalRequest):
-    proposal = await generate_proposal_content(
-        req.metadata, req.requirements, req.responses, req.compliance
-    )
-    proposal["customer"] = req.metadata.get("customer", "")
+    if req.job_id:
+        init_job(req.job_id)
 
-    docx_path = os.path.join(
-        settings.proposal_dir, f"{req.rfp_id}_proposal.docx"
-    )
-    render_docx(proposal, docx_path, req.rfp_id)
-    pdf_path = convert_to_pdf(docx_path)
+    try:
+        result = await build_proposal_files(
+            req.rfp_id,
+            req.metadata,
+            req.requirements,
+            req.responses,
+            req.compliance,
+            on_progress=lambda **fields: _proposal_progress(req.job_id, **fields),
+        )
+        complete_job(req.job_id)
+        return result
+    except httpx.HTTPError as exc:
+        fail_job(req.job_id, f"Ollama unavailable: {exc}")
+        raise HTTPException(502, f"Ollama unavailable: {exc}") from exc
+    except Exception as exc:
+        fail_job(req.job_id, str(exc))
+        raise HTTPException(500, f"Proposal generation failed: {exc}") from exc
 
-    return {
-        "proposal": proposal,
-        "docxPath": docx_path,
-        "pdfPath": pdf_path,
-    }
+
+@app.get("/ai/proposal/progress/{job_id}")
+async def proposal_progress(job_id: str):
+    return get_job(job_id)
 
 
 @app.post("/ai/documents/parse")

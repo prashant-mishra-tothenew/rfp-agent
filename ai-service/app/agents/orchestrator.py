@@ -7,7 +7,7 @@ from langgraph.graph import END, StateGraph
 
 from app.agents.compliance_checker import check_compliance
 from app.agents.knowledge_agent import retrieve_knowledge
-from app.agents.response_agent import generate_response
+from app.agents.response_agent import generate_responses_batch
 from app.agents.rfp_analyzer import analyze_rfp
 from app.config import settings
 from app.embeddings.service import clear_embedding_cache
@@ -34,9 +34,37 @@ def _progress(job_id: str | None, percent: int, step: str, message: str, **extra
 async def analyzer_node(state: RFPWorkflowState) -> RFPWorkflowState:
     """Agent 1: RFP Analyzer — extract requirements."""
     job_id = state.get("job_id")
-    _progress(job_id, 5, "analyzer", "Extracting requirements from RFP...")
+    _progress(job_id, 5, "analyzer", "Preparing document for analysis...")
 
-    result = await analyze_rfp(state["document_text"])
+    stop_heartbeat = asyncio.Event()
+
+    async def heartbeat() -> None:
+        messages = [
+            "Extracting requirements with AI (typically 1–3 min on local hardware)...",
+            "Still reading the RFP — large documents take longer...",
+            "Almost done with requirement extraction...",
+        ]
+        tick = 0
+        while not stop_heartbeat.is_set():
+            _progress(
+                job_id,
+                min(14, 6 + tick % 4),
+                "analyzer",
+                messages[tick % len(messages)],
+            )
+            tick += 1
+            try:
+                await asyncio.wait_for(stop_heartbeat.wait(), timeout=12.0)
+            except asyncio.TimeoutError:
+                continue
+
+    heartbeat_task = asyncio.create_task(heartbeat())
+    try:
+        result = await analyze_rfp(state["document_text"])
+    finally:
+        stop_heartbeat.set()
+        await heartbeat_task
+
     requirements = result.get("requirements", [])
 
     max_reqs = settings.pipeline_max_requirements
@@ -92,21 +120,28 @@ async def knowledge_node(state: RFPWorkflowState) -> RFPWorkflowState:
 
 
 async def response_node(state: RFPWorkflowState) -> RFPWorkflowState:
-    """Agent 3: Response Agent — generate evidence-backed responses (parallel)."""
+    """Agent 3: Response Agent — batched + parallel draft responses."""
     job_id = state.get("job_id")
     evidence_map = state.get("evidence_map", {})
     requirements = state.get("requirements", [])
     total = len(requirements) or 1
+    batch_size = max(1, settings.response_batch_size)
     done = 0
     sem = asyncio.Semaphore(settings.pipeline_concurrency)
 
-    async def process_one(req: dict[str, Any]) -> dict[str, Any]:
+    batches: list[list[dict[str, Any]]] = [
+        requirements[i : i + batch_size]
+        for i in range(0, len(requirements), batch_size)
+    ]
+
+    async def process_batch(batch: list[dict[str, Any]]) -> list[dict[str, Any]]:
         nonlocal done
-        req_id = req.get("id", "")
-        evidence = evidence_map.get(req_id, [])
         async with sem:
-            response = await generate_response(req, evidence)
-            done += 1
+            items = [
+                (req, evidence_map.get(req.get("id", ""), [])) for req in batch
+            ]
+            batch_responses = await generate_responses_batch(items)
+            done += len(batch_responses)
             percent = 50 + int((done / total) * 40)
             _progress(
                 job_id,
@@ -115,11 +150,12 @@ async def response_node(state: RFPWorkflowState) -> RFPWorkflowState:
                 f"Drafting responses ({done}/{total})",
                 requirementDone=done,
             )
-            return response
+            return batch_responses
 
-    responses = await asyncio.gather(*[process_one(req) for req in requirements])
+    batch_results = await asyncio.gather(*[process_batch(b) for b in batches])
+    responses = [resp for group in batch_results for resp in group]
 
-    return {**state, "responses": list(responses), "current_step": "generated"}
+    return {**state, "responses": responses, "current_step": "generated"}
 
 
 async def compliance_node(state: RFPWorkflowState) -> RFPWorkflowState:

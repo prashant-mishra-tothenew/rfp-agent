@@ -50,6 +50,7 @@ async def retrieve_knowledge(
             ],
             model=settings.llm_fast_model,
             format_json=True,
+            disable_thinking=True,
         )
         parsed = ollama_provider.parse_json_response(expanded)
         queries = parsed.get("queries", [req_text])

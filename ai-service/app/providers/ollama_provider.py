@@ -19,15 +19,23 @@ class OllamaProvider:
         model: str | None = None,
         temperature: float = 0.2,
         format_json: bool = False,
+        disable_thinking: bool = False,
+        max_tokens: int | None = None,
     ) -> str:
+        options: dict[str, Any] = {"temperature": temperature}
+        if max_tokens is not None:
+            options["num_predict"] = max_tokens
+
         payload: dict[str, Any] = {
             "model": model or settings.llm_model,
             "messages": messages,
             "stream": False,
-            "options": {"temperature": temperature},
+            "options": options,
         }
         if format_json:
             payload["format"] = "json"
+        if disable_thinking:
+            payload["think"] = False
 
         timeout = httpx.Timeout(settings.ollama_timeout_seconds, connect=30.0)
         async with httpx.AsyncClient(timeout=timeout) as client:

@@ -1,3 +1,4 @@
+import re
 import uuid
 from typing import Any
 
@@ -39,18 +40,88 @@ Return JSON:
   ]
 }}"""
 
+_REQUIREMENT_KEYWORDS = (
+    "shall",
+    "must",
+    "required",
+    "requirement",
+    "mandatory",
+    "scope",
+    "technical",
+    "functional",
+    "compliance",
+    "security",
+    "deliverable",
+    "criteria",
+    "specification",
+    "provide",
+    "support",
+    "vendor",
+    "proposal",
+)
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    paragraphs: list[str] = []
+    for block in re.split(r"\n{2,}", text):
+        block = block.strip()
+        if not block:
+            continue
+        if len(block) > 1500:
+            paragraphs.extend(line.strip() for line in block.split("\n") if line.strip())
+        else:
+            paragraphs.append(block)
+    return paragraphs
+
+
+def prepare_document_for_analysis(text: str, max_chars: int | None = None) -> str:
+    """Trim document to requirement-relevant sections for faster, focused extraction."""
+    limit = max_chars or settings.analyzer_max_chars
+    if len(text) <= limit:
+        return text
+
+    paragraphs = _split_paragraphs(text)
+    intro = "\n\n".join(paragraphs[:3])[:1500]
+
+    scored: list[tuple[int, str]] = []
+    for paragraph in paragraphs:
+        lower = paragraph.lower()
+        score = sum(1 for kw in _REQUIREMENT_KEYWORDS if kw in lower)
+        if re.match(r"^(\d+[\.\)]|[A-Z]-\d+|REQ-?\d+)", paragraph):
+            score += 2
+        if score > 0:
+            scored.append((score, paragraph))
+
+    if not scored:
+        return text[:limit]
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    selected: list[str] = []
+    total = len(intro) + 2
+    for _, paragraph in scored:
+        if total + len(paragraph) > limit:
+            continue
+        selected.append(paragraph)
+        total += len(paragraph) + 2
+
+    if not selected:
+        return text[:limit]
+
+    return f"{intro}\n\n---\n\n" + "\n\n".join(selected)
+
 
 async def analyze_rfp(document_text: str) -> dict[str, Any]:
-    # Truncate very long documents for the showcase
-    text = document_text[:50000]
+    text = prepare_document_for_analysis(document_text)
 
     content = await ollama_provider.chat(
         messages=[
             {"role": "system", "content": ANALYZER_SYSTEM},
             {"role": "user", "content": ANALYZER_USER.format(document_text=text)},
         ],
-        model=settings.llm_model,
+        model=settings.analyzer_model or settings.llm_fast_model,
         format_json=True,
+        disable_thinking=True,
     )
 
     try:
