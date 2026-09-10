@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     template_path: str = "/app/templates/proposal-template.docx"
     ollama_timeout_seconds: float = 900.0
     pipeline_max_requirements: int = 25
+    pipeline_concurrency: int = 3
+    retrieval_score_threshold: float = 0.55
 
     class Config:
         env_file = ".env"

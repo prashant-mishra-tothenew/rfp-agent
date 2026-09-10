@@ -149,7 +149,11 @@ class MilvusStore:
             return None
         parts: list[str] = []
         if filters.get("approved"):
-            parts.append('approval_status == "approved"')
+            # Exclude draft/expired only; include historical reference docs
+            # (response agent still flags weak matches for human review).
+            parts.append(
+                'approval_status in ["approved", "current", "historical"]'
+            )
         if industry := filters.get("industry"):
             parts.append(f'industry == "{industry}"')
         return " and ".join(parts) if parts else None

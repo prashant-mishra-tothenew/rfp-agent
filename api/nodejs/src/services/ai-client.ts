@@ -100,9 +100,64 @@ export async function analyzeRfp(filePath: string) {
   );
 }
 
+export interface PipelineProgress {
+  status: string;
+  step?: string;
+  message?: string;
+  percent?: number;
+  requirementTotal?: number;
+  requirementDone?: number;
+}
+
+function getJson<T>(endpoint: string, timeoutMs: number = 10_000): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(`${AI_SERVICE_URL}${endpoint}`);
+    const transport = url.protocol === "https:" ? https : http;
+
+    const req = transport.request(
+      {
+        hostname: url.hostname,
+        port: url.port,
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        timeout: timeoutMs,
+      },
+      (res) => {
+        let text = "";
+        res.on("data", (chunk) => {
+          text += chunk;
+        });
+        res.on("end", () => {
+          if ((res.statusCode ?? 500) >= 400) {
+            reject(new Error(`AI service error (${res.statusCode}): ${text}`));
+            return;
+          }
+          try {
+            resolve(JSON.parse(text) as T);
+          } catch {
+            reject(new Error(`Invalid JSON from AI service: ${text.slice(0, 200)}`));
+          }
+        });
+      }
+    );
+
+    req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy();
+      reject(new Error(`AI service request timed out after ${timeoutMs}ms`));
+    });
+    req.end();
+  });
+}
+
+export async function getPipelineProgress(jobId: string): Promise<PipelineProgress> {
+  return getJson<PipelineProgress>(`/ai/rfp/pipeline/progress/${jobId}`);
+}
+
 export async function runPipeline(
   filePath: string,
-  filters?: Record<string, unknown>
+  filters?: Record<string, unknown>,
+  jobId?: string
 ) {
   return aiRequest<{
     metadata: Record<string, unknown>;
@@ -111,7 +166,9 @@ export async function runPipeline(
     compliance: Record<string, unknown>;
   }>(
     "/ai/rfp/pipeline",
-    { body: JSON.stringify({ file_path: filePath, filters }) },
+    {
+      body: JSON.stringify({ file_path: filePath, filters, job_id: jobId }),
+    },
     PIPELINE_TIMEOUT_MS
   );
 }

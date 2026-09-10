@@ -6,9 +6,14 @@ import { db } from "../db/index.js";
 import {
   analyzeRfp,
   generateProposal,
+  getPipelineProgress,
   ingestKnowledge,
   runPipeline,
 } from "../services/ai-client.js";
+import {
+  getPipelineJob,
+  setPipelineJob,
+} from "../services/pipeline-jobs.js";
 
 const UPLOAD_DIR =
   process.env.UPLOAD_DIR || path.join(process.cwd(), "../../data/uploads");
@@ -105,6 +110,87 @@ export async function rfpRoutes(app: FastifyInstance) {
     }
   });
 
+  function savePipelineResult(
+    id: string,
+    result: {
+      metadata: Record<string, unknown>;
+      requirements: Array<Record<string, unknown>>;
+      responses: Array<Record<string, unknown>>;
+      compliance?: Record<string, unknown>;
+    }
+  ) {
+    db.prepare("DELETE FROM requirements WHERE rfp_id = ?").run(id);
+    db.prepare("DELETE FROM responses WHERE rfp_id = ?").run(id);
+
+    const insertReq = db.prepare(
+      `INSERT INTO requirements (id, rfp_id, req_id, description, type, mandatory, source_section)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    );
+    const insertResp = db.prepare(
+      `INSERT INTO responses (id, rfp_id, requirement_id, response, status, confidence, evidence, review_required, model_used)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    for (const req of result.requirements) {
+      insertReq.run(
+        uuidv4(),
+        id,
+        req.id,
+        req.description,
+        req.type,
+        req.mandatory ? 1 : 0,
+        req.source_section || ""
+      );
+    }
+
+    for (const resp of result.responses) {
+      insertResp.run(
+        uuidv4(),
+        id,
+        resp.requirementId,
+        resp.response,
+        resp.status,
+        resp.confidence || 0,
+        JSON.stringify(resp.evidence || []),
+        resp.reviewRequired ? 1 : 0,
+        process.env.LLM_MODEL || "qwen3:8b"
+      );
+    }
+
+    const metadata = {
+      ...result.metadata,
+      compliance: result.compliance ?? null,
+    };
+
+    db.prepare(
+      `UPDATE rfps SET status = 'completed', metadata = ?, updated_at = datetime('now') WHERE id = ?`
+    ).run(JSON.stringify(metadata), id);
+  }
+
+  async function executePipeline(
+    id: string,
+    filePath: string,
+    industry: string
+  ) {
+    const filters = {
+      approved: true,
+      industry: industry || undefined,
+    };
+
+    try {
+      const result = await runPipeline(filePath, filters, id);
+      savePipelineResult(id, result);
+      setPipelineJob(id, {
+        status: "completed",
+        compliance: result.compliance as Record<string, unknown>,
+      });
+    } catch (err) {
+      db.prepare("UPDATE rfps SET status = 'error' WHERE id = ?").run(id);
+      const message = err instanceof Error ? err.message : "Pipeline failed";
+      setPipelineJob(id, { status: "error", error: message });
+    }
+  }
+
   app.post("/api/rfps/:id/pipeline", async (request, reply) => {
     const { id } = request.params as { id: string };
     const rfp = db.prepare("SELECT * FROM rfps WHERE id = ?").get(id) as
@@ -113,64 +199,40 @@ export async function rfpRoutes(app: FastifyInstance) {
 
     if (!rfp) return reply.status(404).send({ error: "RFP not found" });
 
-    db.prepare("UPDATE rfps SET status = 'processing' WHERE id = ?").run(id);
-
-    const filters = {
-      approved: true,
-      industry: rfp.industry || undefined,
-    };
-
-    try {
-      const result = await runPipeline(rfp.file_path, filters);
-
-      db.prepare("DELETE FROM requirements WHERE rfp_id = ?").run(id);
-      db.prepare("DELETE FROM responses WHERE rfp_id = ?").run(id);
-
-      const insertReq = db.prepare(
-        `INSERT INTO requirements (id, rfp_id, req_id, description, type, mandatory, source_section)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      );
-      const insertResp = db.prepare(
-        `INSERT INTO responses (id, rfp_id, requirement_id, response, status, confidence, evidence, review_required, model_used)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-      );
-
-      for (const req of result.requirements) {
-        insertReq.run(
-          uuidv4(),
-          id,
-          req.id,
-          req.description,
-          req.type,
-          req.mandatory ? 1 : 0,
-          req.source_section || ""
-        );
-      }
-
-      for (const resp of result.responses) {
-        insertResp.run(
-          uuidv4(),
-          id,
-          resp.requirementId,
-          resp.response,
-          resp.status,
-          resp.confidence || 0,
-          JSON.stringify(resp.evidence || []),
-          resp.reviewRequired ? 1 : 0,
-          process.env.LLM_MODEL || "qwen3:32b"
-        );
-      }
-
-      db.prepare(
-        `UPDATE rfps SET status = 'completed', metadata = ?, updated_at = datetime('now') WHERE id = ?`
-      ).run(JSON.stringify(result.metadata), id);
-
-      return result;
-    } catch (err) {
-      db.prepare("UPDATE rfps SET status = 'error' WHERE id = ?").run(id);
-      const message = err instanceof Error ? err.message : "Pipeline failed";
-      return reply.status(502).send({ error: message });
+    const existing = getPipelineJob(id);
+    if (existing.status === "running") {
+      return reply.status(409).send({ error: "Pipeline already running" });
     }
+
+    db.prepare("UPDATE rfps SET status = 'processing' WHERE id = ?").run(id);
+    setPipelineJob(id, { status: "running" });
+
+    void executePipeline(id, rfp.file_path, rfp.industry);
+
+    return { status: "started", rfpId: id };
+  });
+
+  app.get("/api/rfps/:id/pipeline/status", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const rfp = db.prepare("SELECT id FROM rfps WHERE id = ?").get(id);
+    if (!rfp) return reply.status(404).send({ error: "RFP not found" });
+
+    const job = getPipelineJob(id);
+
+    if (job.status === "running") {
+      try {
+        const progress = await getPipelineProgress(id);
+        return { ...job, progress };
+      } catch {
+        return job;
+      }
+    }
+
+    if (job.status === "completed") {
+      return { ...job, progress: { status: "completed", percent: 100 } };
+    }
+
+    return job;
   });
 
   app.get("/api/rfps/:id/requirements", async (request) => {

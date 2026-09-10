@@ -193,6 +193,11 @@ export default function KnowledgePage() {
                 </option>
               ))}
             </select>
+            <span style={{ fontSize: "0.8rem", color: "#64748b" }}>
+              Use <strong>Approved</strong> for past proposal responses used in
+              auto-drafting. Draft and expired documents are excluded from the
+              pipeline.
+            </span>
           </label>
         </div>
 

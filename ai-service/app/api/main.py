@@ -19,6 +19,7 @@ from app.proposal.generator import (
     generate_proposal_content,
     render_docx,
 )
+from app.pipeline.progress import get_job, init_job
 from app.providers.ollama_provider import ollama_provider
 from app.rag.milvus_store import milvus_store
 
@@ -44,6 +45,7 @@ class AnalyzeRequest(BaseModel):
 class PipelineRequest(BaseModel):
     file_path: str
     filters: dict[str, Any] | None = None
+    job_id: str | None = None
 
 
 class IngestRequest(BaseModel):
@@ -95,8 +97,12 @@ async def run_pipeline(req: PipelineRequest):
         raise HTTPException(404, "File not found")
 
     parsed = parse_document(req.file_path)
+    if req.job_id:
+        init_job(req.job_id)
     try:
-        result = await run_full_pipeline(parsed["text"], filters=req.filters)
+        result = await run_full_pipeline(
+            parsed["text"], filters=req.filters, job_id=req.job_id
+        )
     except MilvusException as exc:
         raise HTTPException(
             503,
@@ -118,6 +124,11 @@ async def run_pipeline(req: PipelineRequest):
         "compliance": result.get("compliance", {}),
         "current_step": result.get("current_step"),
     }
+
+
+@app.get("/ai/rfp/pipeline/progress/{job_id}")
+async def pipeline_progress(job_id: str):
+    return get_job(job_id)
 
 
 @app.post("/ai/knowledge/search")

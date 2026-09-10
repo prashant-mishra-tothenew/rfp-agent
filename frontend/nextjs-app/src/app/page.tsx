@@ -129,7 +129,7 @@ export default function HomePage() {
             opacity: loading ? 0.7 : 1,
           }}
         >
-          {loading ? "Uploading..." : "Analyze RFP"}
+          {loading ? "Uploading..." : "Upload & Analyze"}
         </button>
       </form>
     </div>

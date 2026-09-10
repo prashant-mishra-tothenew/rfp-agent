@@ -15,16 +15,67 @@ export async function uploadRfp(
   return res.json();
 }
 
-export async function runPipeline(rfpId: string) {
+export interface PipelineProgress {
+  status: string;
+  step?: string;
+  message?: string;
+  percent?: number;
+  requirementTotal?: number;
+  requirementDone?: number;
+}
+
+export interface PipelineStatus {
+  status: "idle" | "running" | "completed" | "error";
+  error?: string;
+  compliance?: Record<string, unknown>;
+  progress?: PipelineProgress;
+}
+
+export async function startPipeline(rfpId: string) {
   const res = await fetch(`${API_URL}/api/rfps/${rfpId}/pipeline`, {
     method: "POST",
-    signal: AbortSignal.timeout(20 * 60 * 1000),
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || body.message || `Pipeline failed (${res.status})`);
   }
   return res.json();
+}
+
+export async function getPipelineStatus(rfpId: string): Promise<PipelineStatus> {
+  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/pipeline/status`);
+  if (!res.ok) throw new Error("Failed to fetch pipeline status");
+  return res.json();
+}
+
+export async function pollPipelineUntilDone(
+  rfpId: string,
+  onProgress?: (status: PipelineStatus) => void
+): Promise<PipelineStatus> {
+  for (let i = 0; i < 600; i++) {
+    const status = await getPipelineStatus(rfpId);
+    onProgress?.(status);
+
+    if (status.status === "completed") return status;
+    if (status.status === "error") {
+      throw new Error(status.error || "Pipeline failed");
+    }
+
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  throw new Error("Pipeline timed out after 20 minutes");
+}
+
+export async function waitForPipeline(
+  rfpId: string,
+  onProgress?: (status: PipelineStatus) => void
+): Promise<PipelineStatus> {
+  const current = await getPipelineStatus(rfpId);
+  if (current.status !== "running") {
+    await startPipeline(rfpId);
+  }
+  return pollPipelineUntilDone(rfpId, onProgress);
 }
 
 export async function getRfp(rfpId: string) {
