@@ -11,6 +11,7 @@ from app.proposal.generator import (
     _coerce_text,
     generate_proposal_content,
     render_docx,
+    render_pptx,
 )
 
 
@@ -41,6 +42,22 @@ def test_render_docx_accepts_dict_section_values():
             "rfp-123",
         )
         assert Path(output).exists()
+
+
+def test_render_pptx_creates_deck_from_template():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx(
+            {
+                "customer": "Acme",
+                "executiveSummary": "We propose a scalable commerce platform.",
+                "proposedSolution": "Drupal Commerce with Search API.",
+            },
+            output,
+            "rfp-123",
+        )
+        assert Path(output).exists()
+        assert Path(output).stat().st_size > 100_000
 
 
 def test_build_summary_limits_size():

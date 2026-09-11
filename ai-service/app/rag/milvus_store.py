@@ -67,6 +67,21 @@ class MilvusStore:
         self.connect()
         return Collection(self.collection_name)
 
+    @staticmethod
+    def _escape_expr_string(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
+    def delete_by_document_id(self, document_id: str) -> int:
+        """Remove all Milvus chunks for a knowledge document."""
+        if not document_id:
+            return 0
+
+        self.collection.load()
+        expr = f'document_id == "{self._escape_expr_string(document_id)}"'
+        result = self.collection.delete(expr)
+        self.collection.flush()
+        return int(getattr(result, "delete_count", 0) or 0)
+
     async def insert_chunks(self, chunks: list[dict[str, Any]]) -> int:
         if not chunks:
             return 0

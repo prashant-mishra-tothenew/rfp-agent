@@ -85,7 +85,7 @@ rfp_agent/
 ├── api/nodejs/              # Fastify API + SQLite
 ├── ai-service/              # FastAPI + LangGraph agents
 ├── ingestion/               # Historical data + scripts
-├── templates/               # Proposal DOCX template
+├── templates/               # Proposal templates (proposal-template.pptx with fixed Commercial Summary & Success Stories)
 ├── docs/                    # Requirements, design, integration
 └── docker-compose.yml
 ```

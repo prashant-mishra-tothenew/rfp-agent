@@ -16,7 +16,7 @@ Usage:
 
     Or use the web UI: http://localhost:3000/knowledge
 
-Supported formats: PDF, DOCX
+Supported formats: PDF, DOCX, PPTX
 """
 
 # --- Standard library imports (built into Python, like PHP core extensions) ---
@@ -98,7 +98,7 @@ async def ingest_directory(dir_path: str, industry: str = "Technology") -> None:
     @param industry  Default industry tag applied to every file in this folder
     @return          None (prints progress to the console)
     """
-    supported = {".pdf", ".docx"}  # Set of allowed extensions (like an array_flip whitelist in PHP)
+    supported = {".pdf", ".docx", ".pptx"}  # Set of allowed extensions (like an array_flip whitelist in PHP)
     total = 0
 
     # os.listdir() ≈ scandir() / glob in PHP; sorted() keeps output predictable

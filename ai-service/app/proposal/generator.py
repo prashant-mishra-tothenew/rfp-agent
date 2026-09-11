@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import subprocess
 from functools import partial
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any, Callable
 from docx import Document
 
 from app.config import settings
+from app.proposal.pptx_template import render_pptx_from_template
 from app.providers.ollama_provider import ollama_provider
 
 PROPOSAL_SYSTEM = """You are a proposal writer. Write concise, professional proposal sections from reviewed RFP responses.
@@ -231,16 +233,38 @@ def render_docx(proposal: dict[str, Any], output_path: str, rfp_id: str) -> str:
     return output_path
 
 
-def convert_to_pdf(docx_path: str) -> str | None:
+def render_pptx(proposal: dict[str, Any], output_path: str, rfp_id: str) -> str:
+    """Render proposal using the TTN PPTX template."""
+    return render_pptx_from_template(proposal, output_path, rfp_id)
+
+
+def find_libreoffice_command() -> str | None:
+    for command in ("libreoffice", "soffice"):
+        resolved = shutil.which(command)
+        if resolved:
+            return resolved
+
+    mac_path = "/Applications/LibreOffice.app/Contents/MacOS/soffice"
+    if os.path.isfile(mac_path):
+        return mac_path
+
+    return None
+
+
+def convert_to_pdf(docx_path: str, force: bool = False) -> str | None:
     """Convert DOCX to PDF using LibreOffice headless."""
-    if not settings.proposal_generate_pdf:
+    if not force and not settings.proposal_generate_pdf:
+        return None
+
+    libreoffice = find_libreoffice_command()
+    if not libreoffice:
         return None
 
     pdf_path = docx_path.replace(".docx", ".pdf")
     try:
         subprocess.run(
             [
-                "libreoffice",
+                libreoffice,
                 "--headless",
                 "--convert-to",
                 "pdf",
@@ -275,12 +299,19 @@ async def build_proposal_files(
         None, partial(render_docx, proposal, docx_path, rfp_id)
     )
 
-    _progress(on_progress, 92, "pdf", "Converting to PDF (if available)…")
+    _progress(on_progress, 88, "pptx", "Building PowerPoint deck…")
+    pptx_path = os.path.join(settings.proposal_dir, f"{rfp_id}_proposal.pptx")
+    await loop.run_in_executor(
+        None, partial(render_pptx, proposal, pptx_path, rfp_id)
+    )
+
+    _progress(on_progress, 94, "pdf", "Converting to PDF (if available)…")
     pdf_path = await loop.run_in_executor(None, partial(convert_to_pdf, docx_path))
 
     _progress(on_progress, 100, "complete", "Proposal ready for download")
     return {
         "proposal": proposal,
         "docxPath": docx_path,
+        "pptxPath": pptx_path,
         "pdfPath": pdf_path,
     }

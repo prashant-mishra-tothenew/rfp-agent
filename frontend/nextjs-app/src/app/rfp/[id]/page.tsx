@@ -3,17 +3,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppNav } from "@/components/AppNav";
+import { PipelineLoader } from "@/components/PipelineLoader";
 import { PipelineStepper } from "@/components/PipelineStepper";
+import { ProposalLoader } from "@/components/ProposalLoader";
+import { Spinner } from "@/components/Spinner";
 import {
   downloadUrl,
-  generateProposal,
   getPipelineStatus,
   getRequirements,
   getRfp,
   PipelineStatus,
   pollPipelineUntilDone,
+  ProposalStatus,
   reviewResponse,
   waitForPipeline,
+  waitForProposal,
 } from "@/lib/api";
 
 interface RequirementRow {
@@ -64,7 +68,12 @@ export default function RfpDetailPage() {
   const [pipelineProgress, setPipelineProgress] = useState<PipelineStatus | null>(
     null
   );
-  const [rfpStatus, setRfpStatus] = useState<string>("uploaded");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [proposalLoading, setProposalLoading] = useState(false);
+  const [proposalProgress, setProposalProgress] = useState<ProposalStatus | null>(
+    null
+  );
+  const [proposalElapsed, setProposalElapsed] = useState(0);
 
   const loadData = useCallback(async () => {
     const [rfpData, reqs] = await Promise.all([
@@ -73,7 +82,6 @@ export default function RfpDetailPage() {
     ]);
 
     setRequirements(reqs);
-    setRfpStatus(rfpData.rfp?.status || "uploaded");
 
     if (rfpData.rfp?.metadata) {
       try {
@@ -82,6 +90,10 @@ export default function RfpDetailPage() {
       } catch {
         // ignore invalid metadata
       }
+    }
+
+    if (rfpData.rfp?.status === "proposal_generated") {
+      setProposalReady(true);
     }
 
     if (reqs.length > 0) {
@@ -106,6 +118,15 @@ export default function RfpDetailPage() {
       setLoading(true);
       setStep("processing");
       setPipelineError("");
+      setPipelineProgress({
+        status: "running",
+        progress: {
+          status: "running",
+          step: "starting",
+          percent: 0,
+          message: "Starting multi-agent pipeline…",
+        },
+      });
 
       try {
         let result: PipelineStatus;
@@ -121,7 +142,6 @@ export default function RfpDetailPage() {
 
         const reqs = await getRequirements(rfpId);
         setRequirements(reqs);
-        setRfpStatus("completed");
         setStep("done");
       } catch (err) {
         console.error(err);
@@ -138,6 +158,30 @@ export default function RfpDetailPage() {
     },
     [rfpId]
   );
+
+  useEffect(() => {
+    if (step !== "processing") {
+      setElapsedSeconds(0);
+      return;
+    }
+    const start = Date.now();
+    const timer = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [step]);
+
+  useEffect(() => {
+    if (!proposalLoading) {
+      setProposalElapsed(0);
+      return;
+    }
+    const start = Date.now();
+    const timer = setInterval(() => {
+      setProposalElapsed(Math.floor((Date.now() - start) / 1000));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [proposalLoading]);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -188,12 +232,28 @@ export default function RfpDetailPage() {
   }
 
   async function handleProposal() {
-    setLoading(true);
+    setProposalLoading(true);
+    setPipelineError("");
+    setProposalProgress({
+      status: "running",
+      progress: {
+        status: "running",
+        step: "writing",
+        percent: 0,
+        message: "Starting proposal generation…",
+      },
+    });
+
     try {
-      await generateProposal(rfpId);
+      await waitForProposal(rfpId, setProposalProgress);
       setProposalReady(true);
+    } catch (err) {
+      setPipelineError(
+        err instanceof Error ? err.message : "Proposal generation failed"
+      );
     } finally {
-      setLoading(false);
+      setProposalLoading(false);
+      setProposalProgress(null);
     }
   }
 
@@ -213,16 +273,28 @@ export default function RfpDetailPage() {
 
   return (
     <div>
-      <AppNav active="rfp" />
+      <AppNav active="generate" />
 
       <h2>RFP Analysis</h2>
 
-      <PipelineStepper
-        active={isProcessing}
-        currentStep={progress?.step}
-        percent={progress?.percent}
-        message={progress?.message}
-      />
+      {isProcessing && (
+        <>
+          <PipelineLoader
+            step={progress?.step}
+            percent={progress?.percent}
+            message={progress?.message}
+            elapsedSeconds={elapsedSeconds}
+            requirementDone={progress?.requirementDone}
+            requirementTotal={progress?.requirementTotal}
+          />
+          <PipelineStepper
+            active={isProcessing}
+            currentStep={progress?.step}
+            percent={progress?.percent}
+            message={progress?.message}
+          />
+        </>
+      )}
 
       {summary && step === "done" && (
         <div
@@ -258,12 +330,23 @@ export default function RfpDetailPage() {
         </div>
       )}
 
+      {proposalLoading && proposalProgress && (
+        <ProposalLoader
+          step={proposalProgress.progress?.step}
+          percent={proposalProgress.progress?.percent}
+          message={proposalProgress.progress?.message}
+          elapsedSeconds={proposalElapsed}
+          sectionDone={proposalProgress.progress?.sectionDone}
+          sectionTotal={proposalProgress.progress?.sectionTotal}
+        />
+      )}
+
       <div style={{ display: "flex", gap: "1rem", marginBottom: "2rem" }}>
-        {step === "done" && (
+        {step === "done" && !proposalLoading && (
           <button
             onClick={handleProposal}
-            disabled={loading || isProcessing}
-            style={btnStyle("#059669")}
+            disabled={proposalLoading || isProcessing}
+            style={btnStyle("#059669", proposalLoading)}
           >
             Generate Proposal
           </button>
@@ -272,15 +355,27 @@ export default function RfpDetailPage() {
           <button
             onClick={handleRetry}
             disabled={loading}
-            style={btnStyle("#2563eb")}
+            style={btnStyle("#2563eb", loading)}
           >
-            {pipelineError ? "Retry Analysis" : "Run Analysis"}
+            {loading ? (
+              <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                <Spinner size="sm" />
+                Starting…
+              </span>
+            ) : pipelineError ? (
+              "Retry Analysis"
+            ) : (
+              "Run Analysis"
+            )}
           </button>
         )}
         {proposalReady && (
           <>
             <a href={downloadUrl(rfpId, "docx")} style={linkStyle}>
               Download DOCX
+            </a>
+            <a href={downloadUrl(rfpId, "pptx")} style={linkStyle}>
+              Download PPTX
             </a>
             <a href={downloadUrl(rfpId, "pdf")} style={linkStyle}>
               Download PDF
@@ -297,13 +392,7 @@ export default function RfpDetailPage() {
         <p style={{ color: "#dc2626", marginBottom: "1.5rem" }}>{reviewError}</p>
       )}
 
-      {isProcessing && requirements.length === 0 && (
-        <p style={{ color: "#64748b" }}>
-          Processing RFP ({rfpStatus})… This usually takes 4–10 minutes on a
-          16 GB Mac. Keep this tab open.
-        </p>
-      )}
-
+      <div style={{ opacity: isProcessing ? 0.45 : 1, pointerEvents: isProcessing ? "none" : "auto" }}>
       {requirements.map((req) => {
         const resp = req.response;
         const status = resp?.status || "PENDING";
@@ -461,19 +550,24 @@ export default function RfpDetailPage() {
           </div>
         );
       })}
+      </div>
     </div>
   );
 }
 
-function btnStyle(bg: string): React.CSSProperties {
+function btnStyle(bg: string, disabled = false): React.CSSProperties {
   return {
     background: bg,
     color: "white",
     border: "none",
     padding: "0.75rem 1.5rem",
     borderRadius: 8,
-    cursor: "pointer",
+    cursor: disabled ? "not-allowed" : "pointer",
     fontSize: "0.9rem",
+    opacity: disabled ? 0.8 : 1,
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
   };
 }
 

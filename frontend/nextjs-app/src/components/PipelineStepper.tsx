@@ -1,3 +1,5 @@
+import { Spinner } from "./Spinner";
+
 const STEPS = [
   { key: "analyzer", label: "Extract Requirements" },
   { key: "knowledge", label: "Find Evidence" },
@@ -19,55 +21,18 @@ export function PipelineStepper({
 }) {
   const stepIndex = STEPS.findIndex((s) => s.key === currentStep);
 
+  if (!active) return null;
+
   return (
     <div
       style={{
         background: "white",
-        padding: "1.5rem",
+        padding: "1.25rem 1.5rem",
         borderRadius: 12,
-        marginBottom: "1.5rem",
+        marginBottom: "1rem",
         boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
       }}
     >
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "1rem",
-        }}
-      >
-        <h3 style={{ margin: 0, fontSize: "1rem" }}>
-          {active ? "Analyzing RFP..." : "Pipeline Steps"}
-        </h3>
-        {active && (
-          <span style={{ color: "#2563eb", fontWeight: 600, fontSize: "0.875rem" }}>
-            {percent ?? 0}%
-          </span>
-        )}
-      </div>
-
-      {active && (
-        <div
-          style={{
-            background: "#e2e8f0",
-            borderRadius: 8,
-            height: 8,
-            overflow: "hidden",
-            marginBottom: "1rem",
-          }}
-        >
-          <div
-            style={{
-              background: "#2563eb",
-              height: "100%",
-              width: `${percent ?? 0}%`,
-              transition: "width 0.4s ease",
-            }}
-          />
-        </div>
-      )}
-
       <div
         style={{
           display: "grid",
@@ -82,8 +47,8 @@ export function PipelineStepper({
             <div key={step.key} style={{ textAlign: "center" }}>
               <div
                 style={{
-                  width: 28,
-                  height: 28,
+                  width: 32,
+                  height: 32,
                   borderRadius: "50%",
                   margin: "0 auto 0.5rem",
                   display: "flex",
@@ -93,9 +58,16 @@ export function PipelineStepper({
                   fontWeight: 700,
                   background: done ? "#16a34a" : current ? "#2563eb" : "#e2e8f0",
                   color: done || current ? "white" : "#64748b",
+                  boxShadow: current ? "0 0 0 3px rgba(37,99,235,0.25)" : "none",
                 }}
               >
-                {done ? "✓" : i + 1}
+                {current ? (
+                  <Spinner size="sm" variant="light" />
+                ) : done ? (
+                  "✓"
+                ) : (
+                  i + 1
+                )}
               </div>
               <div
                 style={{
@@ -112,8 +84,15 @@ export function PipelineStepper({
         })}
       </div>
 
-      {active && message && (
-        <p style={{ color: "#64748b", fontSize: "0.875rem", margin: "1rem 0 0" }}>
+      {message && (
+        <p
+          style={{
+            color: "#64748b",
+            fontSize: "0.8rem",
+            margin: "0.75rem 0 0",
+            textAlign: "center",
+          }}
+        >
           {message}
         </p>
       )}

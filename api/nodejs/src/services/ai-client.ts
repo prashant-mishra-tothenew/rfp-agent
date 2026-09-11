@@ -4,6 +4,7 @@ import https from "node:https";
 const AI_SERVICE_URL = process.env.AI_SERVICE_URL || "http://localhost:8000";
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
 const PIPELINE_TIMEOUT_MS = 20 * 60 * 1000;
+const PROPOSAL_TIMEOUT_MS = 15 * 60 * 1000;
 
 function postJson<T>(
   endpoint: string,
@@ -154,6 +155,10 @@ export async function getPipelineProgress(jobId: string): Promise<PipelineProgre
   return getJson<PipelineProgress>(`/ai/rfp/pipeline/progress/${jobId}`);
 }
 
+export async function getProposalProgress(jobId: string): Promise<PipelineProgress> {
+  return getJson<PipelineProgress>(`/ai/proposal/progress/${jobId}`);
+}
+
 export async function runPipeline(
   filePath: string,
   filters?: Record<string, unknown>,
@@ -173,18 +178,28 @@ export async function runPipeline(
   );
 }
 
+export async function convertProposalPdf(docxPath: string) {
+  return aiRequest<{ pdfPath: string }>(
+    "/ai/proposal/convert-pdf",
+    { body: JSON.stringify({ docx_path: docxPath }) },
+    60_000
+  );
+}
+
 export async function generateProposal(data: {
   rfp_id: string;
   metadata: Record<string, unknown>;
   requirements: Array<Record<string, unknown>>;
   responses: Array<Record<string, unknown>>;
   compliance: Record<string, unknown>;
+  job_id?: string;
 }) {
   return aiRequest<{
     proposal: Record<string, unknown>;
     docxPath: string;
+    pptxPath: string;
     pdfPath: string | null;
-  }>("/ai/proposal/generate", { body: JSON.stringify(data) });
+  }>("/ai/proposal/generate", { body: JSON.stringify(data) }, PROPOSAL_TIMEOUT_MS);
 }
 
 export async function ingestKnowledge(data: {
@@ -198,5 +213,12 @@ export async function ingestKnowledge(data: {
   return aiRequest<{ ingested: number; document_id: string }>(
     "/ai/knowledge/ingest",
     { body: JSON.stringify(data) }
+  );
+}
+
+export async function deleteKnowledgeVectors(documentId: string) {
+  return aiRequest<{ deleted: number; document_id: string }>(
+    "/ai/knowledge/delete",
+    { body: JSON.stringify({ document_id: documentId }) }
   );
 }

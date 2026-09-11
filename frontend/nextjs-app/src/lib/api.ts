@@ -11,7 +11,12 @@ export async function uploadRfp(
   form.append("industry", industry);
 
   const res = await fetch(`${API_URL}/api/rfps`, { method: "POST", body: form });
-  if (!res.ok) throw new Error("Upload failed");
+  if (!res.ok) {
+    if (res.status === 413) {
+      throw new Error("File is too large. Maximum upload size is 50 MB per file.");
+    }
+    throw new Error("Upload failed");
+  }
   return res.json();
 }
 
@@ -105,15 +110,72 @@ export async function reviewResponse(
   return res.json();
 }
 
-export async function generateProposal(rfpId: string) {
+export interface ProposalProgress {
+  status: string;
+  step?: string;
+  message?: string;
+  percent?: number;
+  sectionDone?: number;
+  sectionTotal?: number;
+}
+
+export interface ProposalStatus {
+  status: "idle" | "running" | "completed" | "error";
+  error?: string;
+  docxPath?: string;
+  pptxPath?: string;
+  pdfPath?: string | null;
+  progress?: ProposalProgress;
+}
+
+export async function startProposal(rfpId: string) {
   const res = await fetch(`${API_URL}/api/rfps/${rfpId}/proposal`, {
     method: "POST",
   });
-  if (!res.ok) throw new Error("Proposal generation failed");
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || "Proposal generation failed");
+  }
   return res.json();
 }
 
-export function downloadUrl(rfpId: string, format: "docx" | "pdf") {
+export async function getProposalStatus(rfpId: string): Promise<ProposalStatus> {
+  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/proposal/status`);
+  if (!res.ok) throw new Error("Failed to fetch proposal status");
+  return res.json();
+}
+
+export async function pollProposalUntilDone(
+  rfpId: string,
+  onProgress?: (status: ProposalStatus) => void
+): Promise<ProposalStatus> {
+  for (let i = 0; i < 450; i++) {
+    const status = await getProposalStatus(rfpId);
+    onProgress?.(status);
+
+    if (status.status === "completed") return status;
+    if (status.status === "error") {
+      throw new Error(status.error || "Proposal generation failed");
+    }
+
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+
+  throw new Error("Proposal generation timed out after 11 minutes");
+}
+
+export async function waitForProposal(
+  rfpId: string,
+  onProgress?: (status: ProposalStatus) => void
+): Promise<ProposalStatus> {
+  const current = await getProposalStatus(rfpId);
+  if (current.status !== "running") {
+    await startProposal(rfpId);
+  }
+  return pollProposalUntilDone(rfpId, onProgress);
+}
+
+export function downloadUrl(rfpId: string, format: "docx" | "pptx" | "pdf") {
   return `${API_URL}/api/rfps/${rfpId}/download/${format}`;
 }
 
@@ -164,7 +226,14 @@ export async function ingestKnowledge(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || "Knowledge ingestion failed");
+    if (res.status === 413) {
+      throw new Error(
+        "File is too large. Maximum upload size is 50 MB per file."
+      );
+    }
+    throw new Error(
+      (body as { error?: string }).error || "Knowledge ingestion failed"
+    );
   }
 
   return res.json();
@@ -175,4 +244,31 @@ export async function listKnowledgeDocuments(): Promise<KnowledgeDocument[]> {
   if (!res.ok) throw new Error("Failed to load knowledge documents");
   const data = await res.json();
   return data.documents;
+}
+
+export async function deleteKnowledgeDocument(id: string) {
+  const res = await fetch(`${API_URL}/api/knowledge/${id}`, {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || "Failed to delete document");
+  }
+  return res.json();
+}
+
+export async function deleteKnowledgeDocuments(ids: string[]) {
+  const res = await fetch(`${API_URL}/api/knowledge/bulk-delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || "Failed to delete documents");
+  }
+  return res.json() as Promise<{
+    deleted_count: number;
+    not_found: string[];
+  }>;
 }

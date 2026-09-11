@@ -1,5 +1,6 @@
 import os
 import uuid
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -14,7 +15,7 @@ from app.agents.response_agent import generate_response
 from app.agents.rfp_analyzer import analyze_rfp
 from app.config import settings
 from app.documents.parser import parse_document
-from app.proposal.generator import build_proposal_files
+from app.proposal.generator import build_proposal_files, convert_to_pdf
 from app.pipeline.progress import complete_job, fail_job, get_job, init_job, update_job
 from app.providers.ollama_provider import ollama_provider
 from app.rag.milvus_store import milvus_store
@@ -53,6 +54,10 @@ class IngestRequest(BaseModel):
     approval_status: str = "approved"
 
 
+class DeleteKnowledgeRequest(BaseModel):
+    document_id: str
+
+
 class ProposalRequest(BaseModel):
     rfp_id: str
     metadata: dict[str, Any]
@@ -60,6 +65,10 @@ class ProposalRequest(BaseModel):
     responses: list[dict[str, Any]]
     compliance: dict[str, Any]
     job_id: str | None = None
+
+
+class ConvertPdfRequest(BaseModel):
+    docx_path: str
 
 
 @app.get("/health")
@@ -159,8 +168,19 @@ async def ingest_document(req: IngestRequest):
     if not os.path.exists(req.file_path):
         raise HTTPException(404, "File not found")
 
-    parsed = parse_document(req.file_path)
-    text = parsed["text"]
+    try:
+        parsed = parse_document(req.file_path)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    text = (parsed.get("text") or "").strip()
+    if not text:
+        raise HTTPException(
+            400,
+            "No extractable text found in document. "
+            "Ensure the file is not empty or image-only.",
+        )
+
     chunk_size = 1500
     chunks = []
 
@@ -182,8 +202,29 @@ async def ingest_document(req: IngestRequest):
             }
         )
 
-    count = await milvus_store.insert_chunks(chunks)
+    try:
+        count = await milvus_store.insert_chunks(chunks)
+    except MilvusException as exc:
+        raise HTTPException(
+            503,
+            "Milvus vector database is unavailable. Start it with: "
+            "docker compose up -d etcd minio milvus",
+        ) from exc
+
     return {"ingested": count, "document_id": req.document_id}
+
+
+@app.post("/ai/knowledge/delete")
+async def delete_knowledge(req: DeleteKnowledgeRequest):
+    try:
+        deleted = milvus_store.delete_by_document_id(req.document_id)
+    except MilvusException as exc:
+        raise HTTPException(
+            503,
+            "Milvus vector database is unavailable. Start it with: "
+            "docker compose up -d etcd minio milvus",
+        ) from exc
+    return {"deleted": deleted, "document_id": req.document_id}
 
 
 def _proposal_progress(job_id: str | None, **fields: Any) -> None:
@@ -217,6 +258,36 @@ async def generate_proposal(req: ProposalRequest):
 @app.get("/ai/proposal/progress/{job_id}")
 async def proposal_progress(job_id: str):
     return get_job(job_id)
+
+
+def _validate_proposal_docx_path(docx_path: str) -> str:
+    resolved = Path(docx_path).resolve()
+    project_root = Path(__file__).resolve().parents[3]
+    allowed_roots = [
+        Path(settings.proposal_dir).resolve(),
+        project_root / "data" / "proposals",
+        project_root / "ai-service" / "data" / "proposals",
+    ]
+    if not any(resolved.is_relative_to(root.resolve()) for root in allowed_roots):
+        raise HTTPException(400, "Invalid proposal path")
+
+    if not resolved.exists():
+        raise HTTPException(404, "DOCX proposal not found")
+
+    return str(resolved)
+
+
+@app.post("/ai/proposal/convert-pdf")
+async def convert_proposal_pdf(req: ConvertPdfRequest):
+    docx_path = _validate_proposal_docx_path(req.docx_path)
+    pdf_path = convert_to_pdf(docx_path, force=True)
+    if not pdf_path:
+        raise HTTPException(
+            503,
+            "PDF conversion unavailable. Install LibreOffice "
+            "(brew install --cask libreoffice) or download DOCX/PPTX instead.",
+        )
+    return {"pdfPath": pdf_path}
 
 
 @app.post("/ai/documents/parse")

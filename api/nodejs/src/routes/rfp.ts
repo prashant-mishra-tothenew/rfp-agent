@@ -1,12 +1,16 @@
 import { FastifyInstance } from "fastify";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
 import { db } from "../db/index.js";
 import {
   analyzeRfp,
+  deleteKnowledgeVectors,
+  convertProposalPdf,
   generateProposal,
   getPipelineProgress,
+  getProposalProgress,
   ingestKnowledge,
   runPipeline,
 } from "../services/ai-client.js";
@@ -14,9 +18,29 @@ import {
   getPipelineJob,
   setPipelineJob,
 } from "../services/pipeline-jobs.js";
+import {
+  getProposalJob,
+  setProposalJob,
+} from "../services/proposal-jobs.js";
 
+const REPO_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../.."
+);
 const UPLOAD_DIR =
-  process.env.UPLOAD_DIR || path.join(process.cwd(), "../../data/uploads");
+  process.env.UPLOAD_DIR || path.join(REPO_ROOT, "data/uploads");
+const PROPOSAL_DIR =
+  process.env.PROPOSAL_DIR || path.join(REPO_ROOT, "data/proposals");
+const LEGACY_PROPOSAL_DIR = path.join(REPO_ROOT, "ai-service/data/proposals");
+
+function resolveProposalFile(rfpId: string, ext: string): string | null {
+  const filename = `${rfpId}_proposal.${ext}`;
+  const candidates = [
+    path.join(PROPOSAL_DIR, filename),
+    path.join(LEGACY_PROPOSAL_DIR, filename),
+  ];
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
 
 export async function rfpRoutes(app: FastifyInstance) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -278,13 +302,15 @@ export async function rfpRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  app.post("/api/rfps/:id/proposal", async (request, reply) => {
-    const { id } = request.params as { id: string };
+  async function executeProposal(id: string) {
     const rfp = db.prepare("SELECT * FROM rfps WHERE id = ?").get(id) as
       | { metadata: string }
       | undefined;
 
-    if (!rfp) return reply.status(404).send({ error: "RFP not found" });
+    if (!rfp) {
+      setProposalJob(id, { status: "error", error: "RFP not found" });
+      return;
+    }
 
     const requirements = db
       .prepare("SELECT * FROM requirements WHERE rfp_id = ?")
@@ -307,43 +333,131 @@ export async function rfpRoutes(app: FastifyInstance) {
       evidence: r.evidence ? JSON.parse(r.evidence as string) : [],
       reviewRequired: r.review_required === 1,
     }));
+    const compliance =
+      (metadata.compliance as Record<string, unknown> | undefined) ?? {
+        complianceMatrix: [],
+      };
 
-    const result = await generateProposal({
-      rfp_id: id,
-      metadata,
-      requirements: formattedReqs,
-      responses: formattedResps,
-      compliance: { complianceMatrix: [] },
-    });
+    try {
+      const result = await generateProposal({
+        rfp_id: id,
+        metadata,
+        requirements: formattedReqs,
+        responses: formattedResps,
+        compliance,
+        job_id: id,
+      });
 
-    db.prepare("UPDATE rfps SET status = 'proposal_generated' WHERE id = ?").run(
-      id
-    );
+      db.prepare("UPDATE rfps SET status = 'proposal_generated' WHERE id = ?").run(
+        id
+      );
 
-    return result;
+      setProposalJob(id, {
+        status: "completed",
+        docxPath: result.docxPath,
+        pptxPath: result.pptxPath,
+        pdfPath: result.pdfPath,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Proposal generation failed";
+      setProposalJob(id, { status: "error", error: message });
+    }
+  }
+
+  app.post("/api/rfps/:id/proposal", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const rfp = db.prepare("SELECT id FROM rfps WHERE id = ?").get(id);
+    if (!rfp) return reply.status(404).send({ error: "RFP not found" });
+
+    const existing = getProposalJob(id);
+    if (existing.status === "running") {
+      return reply.status(409).send({ error: "Proposal generation already running" });
+    }
+
+    setProposalJob(id, { status: "running" });
+    void executeProposal(id);
+
+    return { status: "started", rfpId: id };
+  });
+
+  app.get("/api/rfps/:id/proposal/status", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const rfp = db.prepare("SELECT id FROM rfps WHERE id = ?").get(id);
+    if (!rfp) return reply.status(404).send({ error: "RFP not found" });
+
+    const job = getProposalJob(id);
+
+    if (job.status === "running") {
+      try {
+        const progress = await getProposalProgress(id);
+        return { ...job, progress };
+      } catch {
+        return job;
+      }
+    }
+
+    if (job.status === "completed") {
+      return { ...job, progress: { status: "completed", percent: 100, step: "complete" } };
+    }
+
+    return job;
   });
 
   app.get("/api/rfps/:id/download/:format", async (request, reply) => {
     const { id, format } = request.params as { id: string; format: string };
-    const proposalDir =
-      process.env.PROPOSAL_DIR || path.join(process.cwd(), "../../data/proposals");
-    const ext = format === "pdf" ? "pdf" : "docx";
-    const filePath = path.join(proposalDir, `${id}_proposal.${ext}`);
+    const formatMap: Record<string, { ext: string; mime: string }> = {
+      docx: {
+        ext: "docx",
+        mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      },
+      pptx: {
+        ext: "pptx",
+        mime: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      },
+      pdf: { ext: "pdf", mime: "application/pdf" },
+    };
 
-    if (!fs.existsSync(filePath)) {
+    const selected = formatMap[format];
+    if (!selected) {
+      return reply.status(400).send({ error: "Unsupported download format" });
+    }
+
+    let filePath = resolveProposalFile(id, selected.ext);
+
+    if (!filePath && format === "pdf") {
+      const docxPath = resolveProposalFile(id, "docx");
+      if (!docxPath) {
+        return reply.status(404).send({ error: "Proposal not found" });
+      }
+
+      try {
+        const converted = await convertProposalPdf(docxPath);
+        filePath =
+          converted.pdfPath && fs.existsSync(converted.pdfPath)
+            ? converted.pdfPath
+            : null;
+      } catch {
+        filePath = null;
+      }
+
+      if (!filePath) {
+        return reply.status(503).send({
+          error:
+            "PDF conversion unavailable. Install LibreOffice (brew install --cask libreoffice) or download DOCX/PPTX instead.",
+        });
+      }
+    }
+
+    if (!filePath) {
       return reply.status(404).send({ error: "Proposal not found" });
     }
 
     const content = fs.readFileSync(filePath);
     reply.header(
       "Content-Disposition",
-      `attachment; filename="proposal-${id}.${ext}"`
+      `attachment; filename="proposal-${id}.${selected.ext}"`
     );
-    reply.type(
-      ext === "pdf"
-        ? "application/pdf"
-        : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-    );
+    reply.type(selected.mime);
     return content;
   });
 
@@ -403,6 +517,33 @@ export async function rfpRoutes(app: FastifyInstance) {
     }
   });
 
+  async function removeKnowledgeDocument(doc: {
+    id: string;
+    document_id: string;
+    filename: string;
+  }) {
+    let milvusDeleted = 0;
+    try {
+      const result = await deleteKnowledgeVectors(doc.document_id);
+      milvusDeleted = result.deleted;
+    } catch {
+      // Best-effort Milvus cleanup (e.g. vectors already removed manually in Attu).
+    }
+
+    const uploadPath = path.join(UPLOAD_DIR, `${doc.id}_${doc.filename}`);
+    if (fs.existsSync(uploadPath)) {
+      fs.unlinkSync(uploadPath);
+    }
+
+    db.prepare(`DELETE FROM knowledge_documents WHERE id = ?`).run(doc.id);
+
+    return {
+      id: doc.id,
+      document_id: doc.document_id,
+      milvus_chunks_deleted: milvusDeleted,
+    };
+  }
+
   app.get("/api/knowledge", async () => {
     const documents = db
       .prepare(
@@ -413,5 +554,63 @@ export async function rfpRoutes(app: FastifyInstance) {
       )
       .all();
     return { documents };
+  });
+
+  app.post("/api/knowledge/bulk-delete", async (request, reply) => {
+    const body = request.body as { ids?: string[] };
+    const ids = body.ids?.filter(Boolean) ?? [];
+
+    if (ids.length === 0) {
+      return reply.status(400).send({ error: "No document ids provided" });
+    }
+
+    const deleted: Array<{
+      id: string;
+      document_id: string;
+      milvus_chunks_deleted: number;
+    }> = [];
+    const notFound: string[] = [];
+
+    for (const id of ids) {
+      const doc = db
+        .prepare(
+          `SELECT id, document_id, filename FROM knowledge_documents WHERE id = ?`
+        )
+        .get(id) as
+        | { id: string; document_id: string; filename: string }
+        | undefined;
+
+      if (!doc) {
+        notFound.push(id);
+        continue;
+      }
+
+      deleted.push(await removeKnowledgeDocument(doc));
+    }
+
+    return {
+      success: true,
+      deleted_count: deleted.length,
+      deleted,
+      not_found: notFound,
+    };
+  });
+
+  app.delete("/api/knowledge/:id", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const doc = db
+      .prepare(
+        `SELECT id, document_id, filename FROM knowledge_documents WHERE id = ?`
+      )
+      .get(id) as
+      | { id: string; document_id: string; filename: string }
+      | undefined;
+
+    if (!doc) {
+      return reply.status(404).send({ error: "Document not found" });
+    }
+
+    const result = await removeKnowledgeDocument(doc);
+    return { success: true, ...result };
   });
 }

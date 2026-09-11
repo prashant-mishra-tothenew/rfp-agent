@@ -3,6 +3,7 @@ from typing import Any
 
 import fitz  # PyMuPDF
 from docx import Document
+from pptx import Presentation
 
 
 def parse_pdf(file_path: str) -> dict[str, Any]:
@@ -61,6 +62,55 @@ def parse_docx(file_path: str) -> dict[str, Any]:
     }
 
 
+def _extract_pptx_shape_text(shape: Any) -> list[str]:
+    texts: list[str] = []
+    if hasattr(shape, "text"):
+        text = (shape.text or "").strip()
+        if text:
+            texts.append(text)
+    if hasattr(shape, "table"):
+        for row in shape.table.rows:
+            for cell in row.cells:
+                cell_text = (cell.text or "").strip()
+                if cell_text:
+                    texts.append(cell_text)
+    if hasattr(shape, "shapes"):
+        for child in shape.shapes:
+            texts.extend(_extract_pptx_shape_text(child))
+    return texts
+
+
+def parse_pptx(file_path: str) -> dict[str, Any]:
+    prs = Presentation(file_path)
+    slides: list[dict[str, Any]] = []
+    full_text_parts: list[str] = []
+
+    for idx, slide in enumerate(prs.slides, start=1):
+        slide_text_parts: list[str] = []
+        for shape in slide.shapes:
+            slide_text_parts.extend(_extract_pptx_shape_text(shape))
+
+        notes = ""
+        if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+            notes = slide.notes_slide.notes_text_frame.text.strip()
+
+        slide_text = "\n".join(slide_text_parts)
+        slides.append({"index": idx, "text": slide_text, "notes": notes})
+        if slide_text:
+            full_text_parts.append(slide_text)
+        if notes:
+            full_text_parts.append(notes)
+
+    return {
+        "text": "\n\n".join(full_text_parts),
+        "slides": slides,
+        "metadata": {
+            "title": prs.core_properties.title or "",
+            "slide_count": len(slides),
+        },
+    }
+
+
 def parse_document(file_path: str) -> dict[str, Any]:
     path = Path(file_path)
     suffix = path.suffix.lower()
@@ -71,6 +121,9 @@ def parse_document(file_path: str) -> dict[str, Any]:
     elif suffix == ".docx":
         result = parse_docx(file_path)
         result["format"] = "docx"
+    elif suffix == ".pptx":
+        result = parse_pptx(file_path)
+        result["format"] = "pptx"
     else:
         raise ValueError(f"Unsupported file format: {suffix}")
 

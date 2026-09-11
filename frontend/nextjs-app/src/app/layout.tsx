@@ -1,11 +1,16 @@
+import "./globals.css";
+
 export default function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
   return (
-    <html lang="en">
-      <body style={{ margin: 0, fontFamily: "system-ui, sans-serif", background: "#f8fafc" }}>
+    <html lang="en" suppressHydrationWarning>
+      <body
+        suppressHydrationWarning
+        style={{ margin: 0, fontFamily: "system-ui, sans-serif", background: "#f8fafc" }}
+      >
         <header style={{ background: "#0f172a", color: "white", padding: "1rem 2rem" }}>
           <h1 style={{ margin: 0, fontSize: "1.25rem" }}>RFP Response Accelerator</h1>
           <p style={{ margin: "0.25rem 0 0", opacity: 0.8, fontSize: "0.875rem" }}>

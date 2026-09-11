@@ -1,4 +1,12 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _data_path(subdir: str) -> str:
+    return str(_REPO_ROOT / "data" / subdir)
 
 
 class Settings(BaseSettings):
@@ -14,9 +22,10 @@ class Settings(BaseSettings):
     milvus_port: int = 19530
     milvus_collection: str = "rfp_knowledge"
 
-    upload_dir: str = "/app/data/uploads"
-    proposal_dir: str = "/app/data/proposals"
-    template_path: str = "/app/templates/proposal-template.docx"
+    upload_dir: str = _data_path("uploads")
+    proposal_dir: str = _data_path("proposals")
+    template_path: str = str(_REPO_ROOT / "templates" / "proposal-template.docx")
+    pptx_template_path: str = str(_REPO_ROOT / "templates" / "proposal-template.pptx")
     ollama_timeout_seconds: float = 900.0
     pipeline_max_requirements: int = 25
     pipeline_concurrency: int = 3
@@ -35,7 +44,8 @@ class Settings(BaseSettings):
     proposal_pdf_timeout_seconds: int = 30
 
     class Config:
-        env_file = ".env"
+        env_file = str(_REPO_ROOT / ".env")
+        extra = "ignore"
 
 
 settings = Settings()
