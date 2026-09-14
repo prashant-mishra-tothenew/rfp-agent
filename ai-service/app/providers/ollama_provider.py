@@ -21,10 +21,13 @@ class OllamaProvider:
         format_json: bool = False,
         disable_thinking: bool = False,
         max_tokens: int | None = None,
+        context_tokens: int | None = None,
     ) -> str:
         options: dict[str, Any] = {"temperature": temperature}
         if max_tokens is not None:
             options["num_predict"] = max_tokens
+        if context_tokens is not None:
+            options["num_ctx"] = context_tokens
 
         payload: dict[str, Any] = {
             "model": model or settings.llm_model,

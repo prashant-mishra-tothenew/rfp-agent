@@ -93,6 +93,10 @@ services:
       LLM_MODEL: qwen3:8b
       LLM_FAST_MODEL: qwen3:8b
       EMBEDDING_MODEL: nomic-embed-text
+      UPLOAD_DIR: /app/data/uploads
+      PROPOSAL_DIR: /app/data/proposals
+      TEMPLATE_PATH: /app/templates/proposal-template.docx
+      PPTX_TEMPLATE_PATH: /app/templates/proposal-template.pptx
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:

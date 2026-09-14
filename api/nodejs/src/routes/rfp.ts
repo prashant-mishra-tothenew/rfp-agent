@@ -32,6 +32,44 @@ const UPLOAD_DIR =
 const PROPOSAL_DIR =
   process.env.PROPOSAL_DIR || path.join(REPO_ROOT, "data/proposals");
 const LEGACY_PROPOSAL_DIR = path.join(REPO_ROOT, "ai-service/data/proposals");
+const SUPPORTED_RFP_EXTENSIONS = new Set([".pdf", ".docx", ".pptx"]);
+
+interface RequirementRow {
+  req_id: string;
+  description: string | null;
+  type: string | null;
+  mandatory: number;
+}
+
+interface ResponseRow {
+  requirement_id: string;
+  response: string | null;
+  status: string | null;
+  evidence: string | null;
+  review_required: number;
+}
+
+function normalizeWebsiteUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    throw new Error("Website URL is invalid");
+  }
+
+  if (!["http:", "https:"].includes(url.protocol)) {
+    throw new Error("Website URL must use HTTP or HTTPS");
+  }
+  if (url.username || url.password) {
+    throw new Error("Website URL must not contain credentials");
+  }
+
+  url.hash = "";
+  return url.toString();
+}
 
 function resolveProposalFile(rfpId: string, ext: string): string | null {
   const filename = `${rfpId}_proposal.${ext}`;
@@ -46,31 +84,79 @@ export async function rfpRoutes(app: FastifyInstance) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
   app.post("/api/rfps", async (request, reply) => {
-    const data = await request.file();
-    if (!data) {
-      return reply.status(400).send({ error: "No file uploaded" });
+    const rfpId = uuidv4();
+    let filename = "";
+    let filePath = "";
+    let websiteUrl = "";
+    let customer = "";
+    let industry = "";
+    let fileCount = 0;
+
+    try {
+      for await (const part of request.parts()) {
+        if (part.type === "file") {
+          fileCount += 1;
+          if (fileCount > 1) {
+            part.file.resume();
+            continue;
+          }
+
+          filename = path.basename(part.filename);
+          const extension = path.extname(filename).toLowerCase();
+          if (!SUPPORTED_RFP_EXTENSIONS.has(extension)) {
+            part.file.resume();
+            return reply
+              .status(415)
+              .send({ error: "Only PDF, DOCX, and PPTX files are supported" });
+          }
+
+          filePath = path.join(UPLOAD_DIR, `${rfpId}_${filename}`);
+          fs.writeFileSync(filePath, await part.toBuffer());
+          continue;
+        }
+
+        const value = String(part.value ?? "");
+        if (part.fieldname === "customer") customer = value.trim();
+        if (part.fieldname === "industry") industry = value.trim();
+        if (part.fieldname === "website_url") websiteUrl = value;
+      }
+
+      websiteUrl = normalizeWebsiteUrl(websiteUrl);
+    } catch (err) {
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      const message = err instanceof Error ? err.message : "Invalid upload";
+      return reply.status(400).send({ error: message });
     }
 
-    const rfpId = uuidv4();
-    const filename = data.filename;
-    const filePath = path.join(UPLOAD_DIR, `${rfpId}_${filename}`);
-    const buffer = await data.toBuffer();
-    fs.writeFileSync(filePath, buffer);
+    if (fileCount > 1) {
+      if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      return reply.status(400).send({ error: "Upload only one document" });
+    }
+    if (!filePath && !websiteUrl) {
+      return reply
+        .status(400)
+        .send({ error: "Provide a document or a website URL" });
+    }
 
-    const fields = data.fields as Record<string, { value?: string }>;
-    const customer = fields.customer?.value || "";
-    const industry = fields.industry?.value || "";
+    if (!filename) {
+      filename = `Website - ${new URL(websiteUrl).hostname}`;
+    }
 
     db.prepare(
-      `INSERT INTO rfps (id, filename, file_path, customer, industry, status)
-       VALUES (?, ?, ?, ?, ?, 'uploaded')`
-    ).run(rfpId, filename, filePath, customer, industry);
+      `INSERT INTO rfps
+       (id, filename, file_path, website_url, customer, industry, status)
+       VALUES (?, ?, ?, ?, ?, ?, 'uploaded')`
+    ).run(rfpId, filename, filePath, websiteUrl || null, customer, industry);
 
     db.prepare(
       `INSERT INTO audit_log (rfp_id, action, details) VALUES (?, ?, ?)`
-    ).run(rfpId, "upload", JSON.stringify({ filename }));
+    ).run(
+      rfpId,
+      "upload",
+      JSON.stringify({ filename: filePath ? filename : null, websiteUrl: websiteUrl || null })
+    );
 
-    return { id: rfpId, filename, status: "uploaded" };
+    return { id: rfpId, filename, websiteUrl: websiteUrl || null, status: "uploaded" };
   });
 
   app.get("/api/rfps/:id", async (request) => {
@@ -91,7 +177,7 @@ export async function rfpRoutes(app: FastifyInstance) {
   app.post("/api/rfps/:id/analyze", async (request, reply) => {
     const { id } = request.params as { id: string };
     const rfp = db.prepare("SELECT * FROM rfps WHERE id = ?").get(id) as
-      | { file_path: string }
+      | { file_path: string; website_url: string | null }
       | undefined;
 
     if (!rfp) return reply.status(404).send({ error: "RFP not found" });
@@ -99,7 +185,10 @@ export async function rfpRoutes(app: FastifyInstance) {
     db.prepare("UPDATE rfps SET status = 'analyzing' WHERE id = ?").run(id);
 
     try {
-      const result = await analyzeRfp(rfp.file_path);
+      const result = await analyzeRfp(
+        rfp.file_path || undefined,
+        rfp.website_url || undefined
+      );
 
       db.prepare("DELETE FROM requirements WHERE rfp_id = ?").run(id);
       const insertReq = db.prepare(
@@ -194,6 +283,7 @@ export async function rfpRoutes(app: FastifyInstance) {
   async function executePipeline(
     id: string,
     filePath: string,
+    websiteUrl: string,
     industry: string
   ) {
     const filters = {
@@ -202,7 +292,7 @@ export async function rfpRoutes(app: FastifyInstance) {
     };
 
     try {
-      const result = await runPipeline(filePath, filters, id);
+      const result = await runPipeline(filePath || undefined, websiteUrl || undefined, filters, id);
       savePipelineResult(id, result);
       setPipelineJob(id, {
         status: "completed",
@@ -218,7 +308,7 @@ export async function rfpRoutes(app: FastifyInstance) {
   app.post("/api/rfps/:id/pipeline", async (request, reply) => {
     const { id } = request.params as { id: string };
     const rfp = db.prepare("SELECT * FROM rfps WHERE id = ?").get(id) as
-      | { file_path: string; industry: string }
+      | { file_path: string; website_url: string | null; industry: string }
       | undefined;
 
     if (!rfp) return reply.status(404).send({ error: "RFP not found" });
@@ -231,7 +321,7 @@ export async function rfpRoutes(app: FastifyInstance) {
     db.prepare("UPDATE rfps SET status = 'processing' WHERE id = ?").run(id);
     setPipelineJob(id, { status: "running" });
 
-    void executePipeline(id, rfp.file_path, rfp.industry);
+    void executePipeline(id, rfp.file_path, rfp.website_url || "", rfp.industry);
 
     return { status: "started", rfpId: id };
   });
@@ -263,19 +353,19 @@ export async function rfpRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const requirements = db
       .prepare("SELECT * FROM requirements WHERE rfp_id = ?")
-      .all(id);
+      .all(id) as RequirementRow[];
     const responses = db
       .prepare("SELECT * FROM responses WHERE rfp_id = ?")
-      .all(id);
+      .all(id) as ResponseRow[];
 
     const responseMap = Object.fromEntries(
-      responses.map((r: { requirement_id: string }) => [
+      responses.map((r) => [
         r.requirement_id,
         r,
       ])
     );
 
-    return requirements.map((req: { req_id: string }) => ({
+    return requirements.map((req) => ({
       ...req,
       response: responseMap[req.req_id] || null,
     }));
@@ -314,23 +404,23 @@ export async function rfpRoutes(app: FastifyInstance) {
 
     const requirements = db
       .prepare("SELECT * FROM requirements WHERE rfp_id = ?")
-      .all(id);
+      .all(id) as RequirementRow[];
     const responses = db
       .prepare("SELECT * FROM responses WHERE rfp_id = ?")
-      .all(id);
+      .all(id) as ResponseRow[];
 
     const metadata = rfp.metadata ? JSON.parse(rfp.metadata) : {};
-    const formattedReqs = requirements.map((r: Record<string, unknown>) => ({
+    const formattedReqs = requirements.map((r) => ({
       id: r.req_id,
       description: r.description,
       type: r.type,
       mandatory: r.mandatory === 1,
     }));
-    const formattedResps = responses.map((r: Record<string, unknown>) => ({
+    const formattedResps = responses.map((r) => ({
       requirementId: r.requirement_id,
       response: r.response,
       status: r.status,
-      evidence: r.evidence ? JSON.parse(r.evidence as string) : [],
+      evidence: r.evidence ? JSON.parse(r.evidence) : [],
       reviewRequired: r.review_required === 1,
     }));
     const compliance =

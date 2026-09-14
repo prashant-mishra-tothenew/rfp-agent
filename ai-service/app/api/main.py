@@ -15,6 +15,7 @@ from app.agents.response_agent import generate_response
 from app.agents.rfp_analyzer import analyze_rfp
 from app.config import settings
 from app.documents.parser import parse_document
+from app.documents.website_crawler import WebsiteCrawlError, crawl_website
 from app.proposal.generator import build_proposal_files, convert_to_pdf
 from app.pipeline.progress import complete_job, fail_job, get_job, init_job, update_job
 from app.providers.ollama_provider import ollama_provider
@@ -36,11 +37,13 @@ class GenerateResponseRequest(BaseModel):
 
 
 class AnalyzeRequest(BaseModel):
-    file_path: str
+    file_path: str | None = None
+    website_url: str | None = None
 
 
 class PipelineRequest(BaseModel):
-    file_path: str
+    file_path: str | None = None
+    website_url: str | None = None
     filters: dict[str, Any] | None = None
     job_id: str | None = None
 
@@ -71,6 +74,57 @@ class ConvertPdfRequest(BaseModel):
     docx_path: str
 
 
+def _parse_uploaded_document(file_path: str) -> dict[str, Any]:
+    upload_dir = Path(settings.upload_dir).resolve()
+    candidate = Path(file_path).resolve()
+    if not candidate.is_relative_to(upload_dir):
+        raise ValueError("Document path is outside the upload directory")
+    if not candidate.is_file():
+        raise FileNotFoundError("Uploaded document was not found")
+    return parse_document(str(candidate))
+
+
+async def _collect_analysis_sources(
+    file_path: str | None,
+    website_url: str | None,
+    job_id: str | None = None,
+) -> tuple[str, dict[str, Any]]:
+    if not file_path and not website_url:
+        raise ValueError("Provide a document or a website URL")
+
+    source_parts: list[str] = []
+    source_metadata: dict[str, Any] = {}
+
+    if file_path:
+        parsed = _parse_uploaded_document(file_path)
+        source_parts.append(
+            f"=== UPLOADED DOCUMENT: {parsed['filename']} ===\n{parsed['text']}"
+        )
+        source_metadata["document"] = {
+            "filename": parsed["filename"],
+            "format": parsed["format"],
+        }
+
+    if website_url:
+        update_job(
+            job_id,
+            percent=2,
+            step="crawler",
+            message="Crawling website pages and identifying visible features...",
+        )
+        crawled = await crawl_website(website_url)
+        source_parts.append(
+            f"=== WEBSITE SOURCE: {crawled.start_url} ===\n{crawled.text}"
+        )
+        source_metadata["website"] = {
+            "url": crawled.start_url,
+            "pages_crawled": len(crawled.pages),
+            "warnings": crawled.warnings,
+        }
+
+    return "\n\n".join(source_parts), source_metadata
+
+
 @app.get("/health")
 async def health():
     ollama_ok = await ollama_provider.health()
@@ -84,31 +138,43 @@ async def health():
 
 @app.post("/ai/rfp/analyze")
 async def analyze_rfp_endpoint(req: AnalyzeRequest):
-    if not os.path.exists(req.file_path):
-        raise HTTPException(404, "File not found")
+    try:
+        source_text, sources = await _collect_analysis_sources(
+            req.file_path, req.website_url
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, WebsiteCrawlError) as exc:
+        raise HTTPException(422, str(exc)) from exc
 
-    parsed = parse_document(req.file_path)
-    result = await analyze_rfp(parsed["text"])
+    result = await analyze_rfp(source_text)
     return {
         "metadata": result.get("metadata", {}),
         "requirements": result.get("requirements", []),
-        "document": {"filename": parsed["filename"], "format": parsed["format"]},
+        "sources": sources,
     }
 
 
 @app.post("/ai/rfp/pipeline")
 async def run_pipeline(req: PipelineRequest):
     """Full multi-agent LangGraph pipeline."""
-    if not os.path.exists(req.file_path):
-        raise HTTPException(404, "File not found")
-
-    parsed = parse_document(req.file_path)
     if req.job_id:
         init_job(req.job_id)
     try:
-        result = await run_full_pipeline(
-            parsed["text"], filters=req.filters, job_id=req.job_id
+        source_text, sources = await _collect_analysis_sources(
+            req.file_path, req.website_url, req.job_id
         )
+        result = await run_full_pipeline(
+            source_text, filters=req.filters, job_id=req.job_id
+        )
+        result_metadata = result.setdefault("metadata", {})
+        result_metadata["sources"] = sources
+    except FileNotFoundError as exc:
+        fail_job(req.job_id, str(exc))
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, WebsiteCrawlError) as exc:
+        fail_job(req.job_id, str(exc))
+        raise HTTPException(422, str(exc)) from exc
     except MilvusException as exc:
         raise HTTPException(
             503,

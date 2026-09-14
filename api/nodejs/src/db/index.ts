@@ -12,6 +12,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     filename TEXT NOT NULL,
     file_path TEXT NOT NULL,
+    website_url TEXT,
     customer TEXT,
     industry TEXT,
     status TEXT DEFAULT 'uploaded',
@@ -65,3 +66,10 @@ db.exec(`
     created_at TEXT DEFAULT (datetime('now'))
   );
 `);
+
+const rfpColumns = db.prepare("PRAGMA table_info(rfps)").all() as Array<{
+  name: string;
+}>;
+if (!rfpColumns.some((column) => column.name === "website_url")) {
+  db.exec("ALTER TABLE rfps ADD COLUMN website_url TEXT");
+}

@@ -39,11 +39,18 @@ async def analyzer_node(state: RFPWorkflowState) -> RFPWorkflowState:
     stop_heartbeat = asyncio.Event()
 
     async def heartbeat() -> None:
-        messages = [
-            "Extracting requirements with AI (typically 1–3 min on local hardware)...",
-            "Still reading the RFP — large documents take longer...",
-            "Almost done with requirement extraction...",
-        ]
+        if "=== WEBSITE SOURCE:" in state["document_text"]:
+            messages = [
+                "Extracting website modules and features with local AI (typically 4–7 min)...",
+                "Reviewing forms, filters, calendars, media, downloads, and account actions...",
+                "Building an exhaustive feature requirement list...",
+            ]
+        else:
+            messages = [
+                "Extracting requirements with AI (typically 1–3 min on local hardware)...",
+                "Still reading the RFP — large documents take longer...",
+                "Almost done with requirement extraction...",
+            ]
         tick = 0
         while not stop_heartbeat.is_set():
             _progress(
@@ -101,7 +108,19 @@ async def knowledge_node(state: RFPWorkflowState) -> RFPWorkflowState:
         nonlocal done
         req_id = req.get("id", "")
         async with sem:
-            evidence = await retrieve_knowledge(req, filters=filters)
+            source_type = str(req.get("source_type", "")).lower()
+            source_section = str(req.get("source_section", "")).lower()
+            is_website_feature = (
+                source_type == "website"
+                or "website" in source_section
+                or "http://" in source_section
+                or "https://" in source_section
+            )
+            evidence = (
+                []
+                if is_website_feature
+                else await retrieve_knowledge(req, filters=filters)
+            )
             done += 1
             percent = 15 + int((done / total) * 35)
             _progress(

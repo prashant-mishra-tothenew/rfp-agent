@@ -56,8 +56,10 @@ python ../ingestion/scripts/ingest.py --dir ../ingestion/historical-rfps
 
 ## Workflow
 
-1. Upload a new RFP (PDF/DOCX)
-2. Click **Generate Draft Responses** — runs the LangGraph pipeline:
+1. Upload an RFP (PDF/DOCX/PPTX), enter a public website URL, or provide both.
+   Website analysis crawls up to 25 same-host HTML pages and extracts visible
+   features and capabilities as requirements.
+2. Analysis starts automatically and runs the LangGraph pipeline:
    - **Analyzer** → extract requirements
    - **Knowledge** → hybrid RAG search in Milvus
    - **Response** → evidence-backed draft answers

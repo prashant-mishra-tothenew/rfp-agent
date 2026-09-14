@@ -1,12 +1,14 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
 
 export async function uploadRfp(
-  file: File,
+  file: File | null,
+  websiteUrl: string,
   customer: string,
   industry: string
 ) {
   const form = new FormData();
-  form.append("file", file);
+  if (file) form.append("file", file);
+  if (websiteUrl.trim()) form.append("website_url", websiteUrl.trim());
   form.append("customer", customer);
   form.append("industry", industry);
 
@@ -15,7 +17,8 @@ export async function uploadRfp(
     if (res.status === 413) {
       throw new Error("File is too large. Maximum upload size is 50 MB per file.");
     }
-    throw new Error("Upload failed");
+    const body = await res.json().catch(() => ({}));
+    throw new Error(body.error || "Upload failed");
   }
   return res.json();
 }

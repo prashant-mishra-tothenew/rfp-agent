@@ -25,6 +25,7 @@ const cardStyle: React.CSSProperties = {
 export function RfpUploadPanel() {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
+  const [websiteUrl, setWebsiteUrl] = useState("");
   const [customer, setCustomer] = useState("");
   const [industry, setIndustry] = useState("Technology");
   const [loading, setLoading] = useState(false);
@@ -32,18 +33,28 @@ export function RfpUploadPanel() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!file) {
-      setError("Please select an RFP file (PDF, DOCX, or PPTX)");
+    const normalizedUrl = websiteUrl.trim();
+    if (!file && !normalizedUrl) {
+      setError("Provide an RFP document, a website URL, or both");
       return;
+    }
+    if (normalizedUrl) {
+      try {
+        const parsed = new URL(normalizedUrl);
+        if (!["http:", "https:"].includes(parsed.protocol)) throw new Error();
+      } catch {
+        setError("Enter a valid website URL beginning with http:// or https://");
+        return;
+      }
     }
 
     setLoading(true);
     setError("");
     try {
-      const result = await uploadRfp(file, customer, industry);
+      const result = await uploadRfp(file, normalizedUrl, customer, industry);
       router.push(`/rfp/${result.id}`);
-    } catch {
-      setError("Upload failed. Is the API running?");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
       setLoading(false);
     }
@@ -51,10 +62,10 @@ export function RfpUploadPanel() {
 
   return (
     <div role="tabpanel" aria-label="Generate RFP">
-      <h2 style={{ marginBottom: "0.5rem" }}>Upload New RFP</h2>
+      <h2 style={{ marginBottom: "0.5rem" }}>Analyze RFP Sources</h2>
       <p style={{ color: "#64748b", marginBottom: "1.5rem" }}>
-        Upload a customer RFP to extract requirements, retrieve evidence from the
-        knowledge base, and generate draft responses plus a proposal deck.
+        Upload a customer RFP, enter a website URL, or provide both. Website
+        pages are crawled to identify visible features and capabilities.
       </p>
 
       <form onSubmit={handleSubmit} style={cardStyle}>
@@ -75,9 +86,42 @@ export function RfpUploadPanel() {
             style={{ marginBottom: "0.5rem" }}
           />
           <p style={{ color: "#94a3b8", fontSize: "0.875rem", margin: 0 }}>
-            PDF / DOCX / PPTX — customer RFP document
+            Optional PDF / DOCX / PPTX document
           </p>
         </div>
+
+        <div
+          style={{
+            textAlign: "center",
+            color: "#64748b",
+            fontSize: "0.875rem",
+            fontWeight: 600,
+            margin: "-0.5rem 0 1rem",
+          }}
+        >
+          AND / OR
+        </div>
+
+        <label style={{ display: "block", marginBottom: "1.5rem" }}>
+          Website URL
+          <input
+            type="url"
+            value={websiteUrl}
+            onChange={(e) => setWebsiteUrl(e.target.value)}
+            placeholder="https://example.com"
+            style={inputStyle}
+          />
+          <span
+            style={{
+              display: "block",
+              color: "#64748b",
+              fontSize: "0.75rem",
+              marginTop: "0.35rem",
+            }}
+          >
+            Up to 25 public pages on the same website will be analyzed.
+          </span>
+        </label>
 
         <label style={{ display: "block", marginBottom: "1rem" }}>
           Customer
@@ -127,7 +171,7 @@ export function RfpUploadPanel() {
           }}
         >
           {loading && <Spinner size="sm" />}
-          {loading ? "Uploading & starting analysis…" : "Upload & Analyze"}
+          {loading ? "Starting analysis…" : "Upload & Analyze"}
         </button>
       </form>
     </div>

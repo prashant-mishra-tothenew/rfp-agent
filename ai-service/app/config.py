@@ -14,7 +14,18 @@ class Settings(BaseSettings):
     llm_model: str = "qwen3:32b"
     llm_fast_model: str = "qwen3:8b"
     analyzer_model: str = ""  # defaults to llm_fast_model when empty
-    analyzer_max_chars: int = 20000
+    analyzer_max_chars: int = 45000
+    analyzer_context_tokens: int = 16384
+    analyzer_max_tokens: int = 3200
+    website_analysis_max_chars: int = 24000
+    website_crawl_max_pages: int = 25
+    website_crawl_max_depth: int = 2
+    website_crawl_max_redirects: int = 3
+    website_crawl_timeout_seconds: float = 10.0
+    website_crawl_max_page_bytes: int = 1_000_000
+    website_crawl_max_page_chars: int = 12_000
+    website_crawl_max_total_chars: int = 200_000
+    website_crawl_user_agent: str = "RFPAgentWebsiteAnalyzer/1.0"
     embedding_model: str = "nomic-embed-text"
     ollama_base_url: str = "http://localhost:11434"
 
@@ -27,7 +38,7 @@ class Settings(BaseSettings):
     template_path: str = str(_REPO_ROOT / "templates" / "proposal-template.docx")
     pptx_template_path: str = str(_REPO_ROOT / "templates" / "proposal-template.pptx")
     ollama_timeout_seconds: float = 900.0
-    pipeline_max_requirements: int = 25
+    pipeline_max_requirements: int = 75
     pipeline_concurrency: int = 3
     response_batch_size: int = 3
     response_model: str = ""

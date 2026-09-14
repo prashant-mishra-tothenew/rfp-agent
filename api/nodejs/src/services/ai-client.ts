@@ -90,13 +90,13 @@ export async function aiRequest<T>(
   return postJson<T>(endpoint, body, timeoutMs);
 }
 
-export async function analyzeRfp(filePath: string) {
+export async function analyzeRfp(filePath?: string, websiteUrl?: string) {
   return aiRequest<{
     metadata: Record<string, unknown>;
     requirements: Array<Record<string, unknown>>;
   }>(
     "/ai/rfp/analyze",
-    { body: JSON.stringify({ file_path: filePath }) },
+    { body: JSON.stringify({ file_path: filePath, website_url: websiteUrl }) },
     10 * 60 * 1000
   );
 }
@@ -160,7 +160,8 @@ export async function getProposalProgress(jobId: string): Promise<PipelineProgre
 }
 
 export async function runPipeline(
-  filePath: string,
+  filePath?: string,
+  websiteUrl?: string,
   filters?: Record<string, unknown>,
   jobId?: string
 ) {
@@ -172,7 +173,12 @@ export async function runPipeline(
   }>(
     "/ai/rfp/pipeline",
     {
-      body: JSON.stringify({ file_path: filePath, filters, job_id: jobId }),
+      body: JSON.stringify({
+        file_path: filePath,
+        website_url: websiteUrl,
+        filters,
+        job_id: jobId,
+      }),
     },
     PIPELINE_TIMEOUT_MS
   );
