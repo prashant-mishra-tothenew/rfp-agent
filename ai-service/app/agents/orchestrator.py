@@ -41,9 +41,9 @@ async def analyzer_node(state: RFPWorkflowState) -> RFPWorkflowState:
     async def heartbeat() -> None:
         if "=== WEBSITE SOURCE:" in state["document_text"]:
             messages = [
-                "Extracting website modules and features with local AI (typically 4–7 min)...",
-                "Reviewing forms, filters, calendars, media, downloads, and account actions...",
-                "Building an exhaustive feature requirement list...",
+                "Analyzing crawled website content with local AI...",
+                "Identifying requirements from the available website pages...",
+                "Organizing the extracted website requirements...",
             ]
         else:
             messages = [

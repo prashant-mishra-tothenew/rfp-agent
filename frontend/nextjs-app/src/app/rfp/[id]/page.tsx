@@ -439,6 +439,13 @@ export default function RfpDetailPage() {
                     <textarea
                       value={editText}
                       onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") {
+                          setEditingId(null);
+                          setEditText("");
+                          setReviewError("");
+                        }
+                      }}
                       style={{ width: "100%", minHeight: 80 }}
                     />
                   ) : (
@@ -503,13 +510,26 @@ export default function RfpDetailPage() {
                     </span>
                   )}
                   {editingId === req.req_id ? (
-                    <button
-                      type="button"
-                      onClick={() => handleReview(req.req_id, "edit")}
-                      style={smallBtn("#2563eb")}
-                    >
-                      Save
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => handleReview(req.req_id, "edit")}
+                        style={smallBtn("#2563eb")}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingId(null);
+                          setEditText("");
+                          setReviewError("");
+                        }}
+                        style={smallBtn("#64748b")}
+                      >
+                        Cancel
+                      </button>
+                    </>
                   ) : (
                     <>
                       <button

@@ -315,7 +315,7 @@ async def _read_response(
     url: str,
     allowed_host: str,
     validator: UrlValidator,
-) -> tuple[httpx.Response, bytes, str]:
+) -> tuple[httpx.Response, bytes, str, bool]:
     current_url = url
     for _ in range(settings.website_crawl_max_redirects + 1):
         current_url = await validator(current_url, allowed_host)
@@ -327,18 +327,22 @@ async def _read_response(
                 current_url = urljoin(current_url, location)
                 continue
 
-            content_length = response.headers.get("content-length")
-            if content_length and int(content_length) > settings.website_crawl_max_page_bytes:
-                raise WebsiteCrawlError("Website page exceeds the crawl size limit")
-
             chunks: list[bytes] = []
             size = 0
+            truncated = False
             async for chunk in response.aiter_bytes():
-                size += len(chunk)
-                if size > settings.website_crawl_max_page_bytes:
-                    raise WebsiteCrawlError("Website page exceeds the crawl size limit")
+                remaining = settings.website_crawl_max_page_bytes - size
+                if remaining <= 0:
+                    truncated = True
+                    break
+                if len(chunk) > remaining:
+                    chunks.append(chunk[:remaining])
+                    size += remaining
+                    truncated = True
+                    break
                 chunks.append(chunk)
-            return response, b"".join(chunks), current_url
+                size += len(chunk)
+            return response, b"".join(chunks), current_url, truncated
 
     raise WebsiteCrawlError("Website exceeded the redirect limit")
 
@@ -352,7 +356,7 @@ async def _load_robots(
     parsed = urlsplit(start_url)
     robots_url = urlunsplit((parsed.scheme, parsed.netloc, "/robots.txt", "", ""))
     try:
-        response, body, _ = await _read_response(
+        response, body, _, _ = await _read_response(
             client, robots_url, allowed_host, validator
         )
         if response.status_code != 200:
@@ -408,10 +412,14 @@ async def crawl_website(
                 continue
 
             try:
-                response, body, final_url = await _read_response(
+                response, body, final_url, truncated = await _read_response(
                     client, url, allowed_host, validator
                 )
                 response.raise_for_status()
+                if truncated:
+                    warnings.append(
+                        f"Page content reached the size limit and was truncated: {final_url}"
+                    )
                 content_type = response.headers.get("content-type", "").lower()
                 if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
                     warnings.append(f"Skipped non-HTML page: {final_url}")
