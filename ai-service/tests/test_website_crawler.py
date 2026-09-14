@@ -76,6 +76,29 @@ async def test_crawl_honors_page_limit(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_crawl_truncates_oversized_page_without_failing(monkeypatch):
+    monkeypatch.setattr(settings, "website_crawl_max_page_bytes", 80)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/robots.txt":
+            return httpx.Response(404, request=request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            content=b"<h1>Visible feature</h1>" + (b"x" * 200),
+            request=request,
+        )
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler)
+    ) as client:
+        result = await crawl_website("https://93.184.216.34/", client=client)
+
+    assert result.pages[0].text.startswith("Visible feature")
+    assert any("was truncated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "url",
     [
