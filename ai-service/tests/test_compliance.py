@@ -29,4 +29,5 @@ def test_compliance_checker_missing():
     ]
     result = check_compliance(requirements, responses)
     assert result["summary"]["missing"] == 1
+    assert result["complianceMatrix"][0]["status"] == "Not supported"
     assert len(result["gaps"]) == 1

@@ -309,7 +309,7 @@ export default function RfpDetailPage() {
             ["Requirements", summary.total],
             ["Supported", summary.supported],
             ["Partial", summary.partial],
-            ["Missing", summary.missing],
+            ["Not supported", summary.missing],
             ["Coverage", `${summary.coveragePercent}%`],
           ].map(([label, value]) => (
             <div

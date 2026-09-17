@@ -415,6 +415,7 @@ export async function rfpRoutes(app: FastifyInstance) {
       description: r.description,
       type: r.type,
       mandatory: r.mandatory === 1,
+      source_section: r.source_section,
     }));
     const formattedResps = responses.map((r) => ({
       requirementId: r.requirement_id,

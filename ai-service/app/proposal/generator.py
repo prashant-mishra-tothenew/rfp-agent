@@ -12,13 +12,23 @@ from app.config import settings
 from app.proposal.pptx_template import render_pptx_from_template
 from app.providers.ollama_provider import ollama_provider
 
-PROPOSAL_SYSTEM = """You are a proposal writer. Write concise, professional proposal sections from reviewed RFP responses.
-Use only the provided responses. Do not invent capabilities. Return valid JSON only."""
+PROPOSAL_SYSTEM = """You are a proposal writer. Write concise, professional proposal sections from extracted RFP requirements and reviewed responses.
+Ground every section in the supplied requirements (from uploaded documents and/or crawled website pages) and the response evidence.
+Use only the provided material. Do not invent capabilities. Return valid JSON only.
+Format for PowerPoint: use newline-separated bullets; keep lines under 120 characters where possible.
+For technicalApproach, include some lines as "Component | Key consideration" for architecture tables.
+For optional mobile platform comparison, use "Factor | Option A | Option B" (three pipe-separated parts per line)."""
 
 PROPOSAL_BATCHES: list[list[str]] = [
     ["executiveSummary", "understandingOfRequirements", "proposedSolution"],
     ["technicalApproach", "implementationMethodology", "supportAndSla"],
-    ["securityCompliance", "relevantExperience", "caseStudies", "assumptions"],
+    [
+        "securityCompliance",
+        "assumptions",
+        "inScope",
+        "outOfScope",
+        "engagementModel",
+    ],
 ]
 
 SECTION_LABELS: dict[str, str] = {
@@ -29,9 +39,10 @@ SECTION_LABELS: dict[str, str] = {
     "implementationMethodology": "Implementation Methodology",
     "supportAndSla": "Support & SLA",
     "securityCompliance": "Security & Compliance",
-    "relevantExperience": "Relevant Experience",
-    "caseStudies": "Case Studies",
     "assumptions": "Assumptions",
+    "inScope": "In Scope",
+    "outOfScope": "Out of Scope",
+    "engagementModel": "Engagement Model",
 }
 
 ProgressFn = Callable[..., None]
@@ -79,6 +90,47 @@ def _build_summary(responses: list[dict[str, Any]]) -> str:
     return "\n".join(lines) or "- No reviewed responses available."
 
 
+def _build_requirements_digest(requirements: list[dict[str, Any]]) -> str:
+    max_items = settings.proposal_max_responses
+    max_chars = settings.proposal_response_chars
+    lines: list[str] = []
+    for req in requirements[:max_items]:
+        req_id = req.get("id") or req.get("req_id") or ""
+        description = (req.get("description") or "")[:max_chars]
+        if not description:
+            continue
+        mandatory = req.get("mandatory", False)
+        req_type = req.get("type") or ""
+        source_type = req.get("source_type") or ""
+        source_section = (req.get("source_section") or "").strip()
+        if not source_type and source_section:
+            source_type = (
+                "website"
+                if source_section.startswith("/") or "website" in source_section.lower()
+                else "document"
+            )
+        prefix = "[MANDATORY] " if mandatory else ""
+        source_hint = f" ({source_type})" if source_type else ""
+        lines.append(f"- {req_id}{source_hint} [{req_type}] {prefix}{description}")
+    return "\n".join(lines) or "- No requirements were extracted."
+
+
+def _format_source_context(metadata: dict[str, Any]) -> str:
+    sources = metadata.get("sources")
+    if not isinstance(sources, dict):
+        return "RFP input: uploaded document and/or website URL."
+
+    parts: list[str] = []
+    document = sources.get("document")
+    if isinstance(document, dict) and document.get("filename"):
+        parts.append(f"Uploaded document: {document['filename']}")
+    website = sources.get("website")
+    if isinstance(website, dict) and website.get("url"):
+        pages = website.get("pages_crawled", "?")
+        parts.append(f"Website crawl: {website['url']} ({pages} pages)")
+    return "\n".join(parts) or "RFP input: uploaded document and/or website URL."
+
+
 def _progress(
     on_progress: ProgressFn | None,
     percent: int,
@@ -93,6 +145,7 @@ def _progress(
 async def _generate_batch(
     keys: list[str],
     summary: str,
+    requirements_digest: str,
     metadata: dict[str, Any],
 ) -> dict[str, str]:
     key_list = ", ".join(f'"{k}"' for k in keys)
@@ -101,18 +154,23 @@ async def _generate_batch(
             {"role": "system", "content": PROPOSAL_SYSTEM},
             {
                 "role": "user",
-                "content": f"""Write these proposal sections from the reviewed RFP responses.
+                "content": f"""Write these proposal sections from the extracted requirements and reviewed responses.
 
 Customer: {metadata.get("customer", "Client")}
 Industry: {metadata.get("industry", "General")}
+Input sources:
+{_format_source_context(metadata)}
 
-Responses:
+Extracted requirements (document upload and/or website crawl):
+{requirements_digest}
+
+Reviewed responses:
 {summary}
 
 Return JSON with ONLY these keys: {key_list}
-Each value MUST be a plain string (2-3 concise paragraphs). Do not nest objects or arrays.
+Each value MUST be a plain string (bullet lines separated by newlines). Do not nest objects or arrays.
 
-Example shape: {{{", ".join(f'"{k}": "paragraph text here"' for k in keys)}}}""",
+Example shape: {{{", ".join(f'"{k}": "bullet one\\nbullet two"' for k in keys)}}}""",
             },
         ],
         model=_proposal_model(),
@@ -139,6 +197,7 @@ async def generate_proposal_content(
     on_progress: ProgressFn | None = None,
 ) -> dict[str, Any]:
     summary = _build_summary(responses)
+    requirements_digest = _build_requirements_digest(requirements)
     total_batches = len(PROPOSAL_BATCHES)
     done_batches = 0
     proposal: dict[str, Any] = {}
@@ -156,7 +215,7 @@ async def generate_proposal_content(
                 sectionDone=done_batches,
                 sectionTotal=total_batches,
             )
-            result = await _generate_batch(keys, summary, metadata)
+            result = await _generate_batch(keys, summary, requirements_digest, metadata)
             done_batches += 1
             _progress(
                 on_progress,
@@ -177,6 +236,12 @@ async def generate_proposal_content(
     _progress(on_progress, 80, "render", "Building Word document…")
     proposal["complianceMatrix"] = compliance.get("complianceMatrix", [])
     proposal["customer"] = metadata.get("customer", "")
+    proposal["projectTitle"] = (
+        metadata.get("projectTitle")
+        or metadata.get("project_title")
+        or metadata.get("customer")
+        or "Client"
+    )
     return proposal
 
 
@@ -200,9 +265,10 @@ def render_docx(proposal: dict[str, Any], output_path: str, rfp_id: str) -> str:
         ("Implementation Methodology", "implementationMethodology"),
         ("Support and SLA", "supportAndSla"),
         ("Security and Compliance", "securityCompliance"),
-        ("Relevant Experience", "relevantExperience"),
-        ("Case Studies", "caseStudies"),
         ("Assumptions", "assumptions"),
+        ("In Scope", "inScope"),
+        ("Out of Scope", "outOfScope"),
+        ("Engagement Model", "engagementModel"),
     ]
 
     for title, key in sections:

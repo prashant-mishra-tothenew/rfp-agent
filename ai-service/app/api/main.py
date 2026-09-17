@@ -74,10 +74,20 @@ class ConvertPdfRequest(BaseModel):
     docx_path: str
 
 
+def _allowed_upload_dirs() -> list[Path]:
+    project_root = Path(__file__).resolve().parents[3]
+    return [
+        Path(settings.upload_dir).resolve(),
+        project_root / "data" / "uploads",
+        project_root / "ai-service" / "data" / "uploads",
+    ]
+
+
 def _parse_uploaded_document(file_path: str) -> dict[str, Any]:
-    upload_dir = Path(settings.upload_dir).resolve()
     candidate = Path(file_path).resolve()
-    if not candidate.is_relative_to(upload_dir):
+    if not any(
+        candidate.is_relative_to(root.resolve()) for root in _allowed_upload_dirs()
+    ):
         raise ValueError("Document path is outside the upload directory")
     if not candidate.is_file():
         raise FileNotFoundError("Uploaded document was not found")
