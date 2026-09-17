@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -53,6 +54,16 @@ class Settings(BaseSettings):
     proposal_max_responses: int = 25
     proposal_generate_pdf: bool = False
     proposal_pdf_timeout_seconds: int = 30
+
+    @field_validator("upload_dir", "proposal_dir", mode="before")
+    @classmethod
+    def _resolve_repo_relative_paths(cls, value: object) -> object:
+        if value is None:
+            return value
+        path = Path(str(value))
+        if path.is_absolute():
+            return str(path.resolve())
+        return str((_REPO_ROOT / path).resolve())
 
     class Config:
         env_file = str(_REPO_ROOT / ".env")

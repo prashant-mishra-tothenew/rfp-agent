@@ -25,7 +25,7 @@ def check_compliance(
             matrix_status = "Partial"
         else:
             missing += 1
-            matrix_status = "Missing"
+            matrix_status = "Not supported"
 
         entry = {
             "requirementId": req_id,

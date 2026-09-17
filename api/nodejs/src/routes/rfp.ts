@@ -5,6 +5,11 @@ import { fileURLToPath } from "url";
 import { v4 as uuidv4 } from "uuid";
 import { db } from "../db/index.js";
 import {
+  canAccessRfpOwner,
+  isRfpVisibleToReviewer,
+  parseRfpAccess,
+} from "../rfp-access.js";
+import {
   analyzeRfp,
   deleteKnowledgeVectors,
   convertProposalPdf,
@@ -12,6 +17,7 @@ import {
   getPipelineProgress,
   getProposalProgress,
   ingestKnowledge,
+  runComplianceCheck,
   runPipeline,
 } from "../services/ai-client.js";
 import {
@@ -83,6 +89,32 @@ function resolveProposalFile(rfpId: string, ext: string): string | null {
 export async function rfpRoutes(app: FastifyInstance) {
   fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+  app.addHook("preHandler", async (request, reply) => {
+    const id = (request.params as { id?: string }).id;
+    if (!id) return;
+
+    const row = db
+      .prepare("SELECT owner_id, submission_status FROM rfps WHERE id = ?")
+      .get(id) as
+      | { owner_id: string | null; submission_status: string | null }
+      | undefined;
+    if (!row) return;
+
+    const access = parseRfpAccess(
+      request.headers as Record<string, string | string[] | undefined>,
+      request.query as { role?: string; ownerId?: string }
+    );
+    if (!canAccessRfpOwner(row.owner_id, access)) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+    if (
+      access.role === "sme" &&
+      !isRfpVisibleToReviewer(row.submission_status)
+    ) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+  });
+
   app.post("/api/rfps", async (request, reply) => {
     const rfpId = uuidv4();
     let filename = "";
@@ -142,11 +174,31 @@ export async function rfpRoutes(app: FastifyInstance) {
       filename = `Website - ${new URL(websiteUrl).hostname}`;
     }
 
+    const access = parseRfpAccess(
+      request.headers as Record<string, string | string[] | undefined>
+    );
+    const ownerId = access.role === "user" ? access.ownerId : null;
+    const submissionStatus = access.role === "user" ? "draft" : "published";
+    const publishedAt =
+      submissionStatus === "published"
+        ? new Date().toISOString().slice(0, 19).replace("T", " ")
+        : null;
+
     db.prepare(
       `INSERT INTO rfps
-       (id, filename, file_path, website_url, customer, industry, status)
-       VALUES (?, ?, ?, ?, ?, ?, 'uploaded')`
-    ).run(rfpId, filename, filePath, websiteUrl || null, customer, industry);
+       (id, filename, file_path, website_url, customer, industry, status, owner_id, submission_status, published_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'uploaded', ?, ?, ?)`
+    ).run(
+      rfpId,
+      filename,
+      filePath,
+      websiteUrl || null,
+      customer,
+      industry,
+      ownerId,
+      submissionStatus,
+      publishedAt
+    );
 
     db.prepare(
       `INSERT INTO audit_log (rfp_id, action, details) VALUES (?, ?, ?)`
@@ -156,7 +208,190 @@ export async function rfpRoutes(app: FastifyInstance) {
       JSON.stringify({ filename: filePath ? filename : null, websiteUrl: websiteUrl || null })
     );
 
-    return { id: rfpId, filename, websiteUrl: websiteUrl || null, status: "uploaded" };
+    return {
+      id: rfpId,
+      filename,
+      websiteUrl: websiteUrl || null,
+      status: "uploaded",
+      submissionStatus,
+    };
+  });
+
+  app.post("/api/rfps/:id/publish", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const access = parseRfpAccess(
+      request.headers as Record<string, string | string[] | undefined>
+    );
+    if (access.role !== "user") {
+      return reply.status(403).send({
+        error: "Only contributors can publish an RFP for reviewer.",
+      });
+    }
+
+    const rfp = db
+      .prepare("SELECT owner_id, status FROM rfps WHERE id = ?")
+      .get(id) as { owner_id: string | null; status: string } | undefined;
+    if (!rfp || rfp.owner_id !== access.ownerId) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+
+    const analysisReady = new Set(["completed", "proposal_generated"]);
+    if (!analysisReady.has(rfp.status)) {
+      return reply.status(400).send({
+        error: "Finish analysis before publishing for review.",
+      });
+    }
+
+    db.prepare(
+      `UPDATE rfps SET submission_status = 'published', published_at = datetime('now'), updated_at = datetime('now') WHERE id = ?`
+    ).run(id);
+    db.prepare(
+      `INSERT INTO audit_log (rfp_id, action, details) VALUES (?, ?, ?)`
+    ).run(id, "publish", JSON.stringify({ submissionStatus: "published" }));
+
+    return { submissionStatus: "published" };
+  });
+
+  app.post("/api/rfps/:id/draft", async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const access = parseRfpAccess(
+      request.headers as Record<string, string | string[] | undefined>
+    );
+    if (access.role !== "user") {
+      return reply.status(403).send({
+        error: "Only contributors can move an RFP back to draft.",
+      });
+    }
+
+    const rfp = db
+      .prepare("SELECT owner_id FROM rfps WHERE id = ?")
+      .get(id) as { owner_id: string | null } | undefined;
+    if (!rfp || rfp.owner_id !== access.ownerId) {
+      return reply.status(404).send({ error: "Not found" });
+    }
+
+    db.prepare(
+      `UPDATE rfps SET submission_status = 'draft', published_at = NULL, updated_at = datetime('now') WHERE id = ?`
+    ).run(id);
+    db.prepare(
+      `INSERT INTO audit_log (rfp_id, action, details) VALUES (?, ?, ?)`
+    ).run(id, "unpublish", JSON.stringify({ submissionStatus: "draft" }));
+
+    return { submissionStatus: "draft" };
+  });
+
+  app.get("/api/rfps", async (request) => {
+    const access = parseRfpAccess(
+      request.headers as Record<string, string | string[] | undefined>
+    );
+
+    const listStmt =
+      access.role === "sme"
+        ? db.prepare(
+            `SELECT id, filename, customer, industry, status, created_at, updated_at, metadata, submission_status, published_at
+             FROM rfps
+             WHERE COALESCE(submission_status, 'published') = 'published'
+             ORDER BY datetime(updated_at) DESC
+             LIMIT 100`
+          )
+        : db.prepare(
+            `SELECT id, filename, customer, industry, status, created_at, updated_at, metadata, submission_status, published_at
+             FROM rfps
+             WHERE owner_id = ?
+             ORDER BY datetime(updated_at) DESC
+             LIMIT 100`
+          );
+
+    const rfps = (
+      access.role === "sme" ? listStmt.all() : listStmt.all(access.ownerId)
+    ) as Array<{
+      id: string;
+      filename: string;
+      customer: string | null;
+      industry: string | null;
+      status: string;
+      created_at: string;
+      updated_at: string;
+      metadata: string | null;
+      submission_status: string | null;
+      published_at: string | null;
+    }>;
+
+    const reviewRows = db
+      .prepare(
+        `SELECT rfp_id,
+            COUNT(*) AS total,
+            SUM(CASE WHEN COALESCE(review_status, 'pending') IN ('pending', 'draft_edited') THEN 1 ELSE 0 END) AS pending,
+            SUM(CASE WHEN review_status = 'accepted' THEN 1 ELSE 0 END) AS accepted,
+            SUM(CASE WHEN review_status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+            SUM(CASE WHEN review_status = 'edited' THEN 1 ELSE 0 END) AS edited
+         FROM responses
+         GROUP BY rfp_id`
+      )
+      .all() as Array<{
+      rfp_id: string;
+      total: number;
+      pending: number;
+      accepted: number;
+      rejected: number;
+      edited: number;
+    }>;
+
+    const reviewByRfp = Object.fromEntries(
+      reviewRows.map((row) => [
+        row.rfp_id,
+        {
+          total: row.total,
+          pending: row.pending,
+          accepted: row.accepted,
+          rejected: row.rejected,
+          edited: row.edited,
+        },
+      ])
+    );
+
+    return rfps.map((rfp) => {
+      let coveragePercent: number | null = null;
+      if (rfp.metadata) {
+        try {
+          const meta = JSON.parse(rfp.metadata) as {
+            compliance?: { summary?: { coveragePercent?: number } };
+          };
+          coveragePercent = meta.compliance?.summary?.coveragePercent ?? null;
+        } catch {
+          coveragePercent = null;
+        }
+      }
+
+      const review = reviewByRfp[rfp.id] ?? {
+        total: 0,
+        pending: 0,
+        accepted: 0,
+        rejected: 0,
+        edited: 0,
+      };
+
+      const submissionStatus = rfp.submission_status || "published";
+      const needsReview =
+        submissionStatus === "published" &&
+        review.total > 0 &&
+        review.pending + review.rejected > 0;
+
+      return {
+        id: rfp.id,
+        filename: rfp.filename,
+        customer: rfp.customer || "",
+        industry: rfp.industry || "",
+        status: rfp.status,
+        submissionStatus,
+        publishedAt: rfp.published_at,
+        createdAt: rfp.created_at,
+        updatedAt: rfp.updated_at,
+        coveragePercent,
+        review,
+        needsReview,
+      };
+    });
   });
 
   app.get("/api/rfps/:id", async (request) => {
@@ -319,6 +554,10 @@ export async function rfpRoutes(app: FastifyInstance) {
     }
 
     db.prepare("UPDATE rfps SET status = 'processing' WHERE id = ?").run(id);
+    db.prepare(
+      `UPDATE rfps SET submission_status = 'draft', published_at = NULL
+       WHERE id = ? AND owner_id IS NOT NULL`
+    ).run(id);
     setPipelineJob(id, { status: "running" });
 
     void executePipeline(id, rfp.file_path, rfp.website_url || "", rfp.industry);
@@ -371,13 +610,29 @@ export async function rfpRoutes(app: FastifyInstance) {
     }));
   });
 
-  app.post("/api/rfps/:id/review", async (request) => {
+  app.post("/api/rfps/:id/review", async (request, reply) => {
+    const access = parseRfpAccess(
+      request.headers as Record<string, string | string[] | undefined>,
+      request.query as { role?: string; ownerId?: string }
+    );
     const { id } = request.params as { id: string };
     const body = request.body as {
       requirementId: string;
       action: "accept" | "reject" | "edit";
       response?: string;
     };
+
+    if (access.role !== "sme") {
+      if (body.action !== "edit" || !body.response?.trim()) {
+        return reply.status(403).send({
+          error: "Contributors can save draft edits only. Accept and reject are for reviewers.",
+        });
+      }
+      db.prepare(
+        `UPDATE responses SET response = ?, review_status = 'draft_edited' WHERE rfp_id = ? AND requirement_id = ?`
+      ).run(body.response.trim(), id, body.requirementId);
+      return { success: true };
+    }
 
     if (body.action === "edit" && body.response) {
       db.prepare(
@@ -415,6 +670,7 @@ export async function rfpRoutes(app: FastifyInstance) {
       description: r.description,
       type: r.type,
       mandatory: r.mandatory === 1,
+      source_section: r.source_section,
     }));
     const formattedResps = responses.map((r) => ({
       requirementId: r.requirement_id,
@@ -423,10 +679,22 @@ export async function rfpRoutes(app: FastifyInstance) {
       evidence: r.evidence ? JSON.parse(r.evidence) : [],
       reviewRequired: r.review_required === 1,
     }));
-    const compliance =
-      (metadata.compliance as Record<string, unknown> | undefined) ?? {
-        complianceMatrix: [],
-      };
+    let compliance: Record<string, unknown>;
+    try {
+      compliance = (await runComplianceCheck({
+        requirements: formattedReqs,
+        responses: formattedResps,
+      })) as Record<string, unknown>;
+      metadata.compliance = compliance;
+      db.prepare(
+        `UPDATE rfps SET metadata = ?, updated_at = datetime('now') WHERE id = ?`
+      ).run(JSON.stringify(metadata), id);
+    } catch {
+      compliance =
+        (metadata.compliance as Record<string, unknown> | undefined) ?? {
+          complianceMatrix: [],
+        };
+    }
 
     try {
       const result = await generateProposal({

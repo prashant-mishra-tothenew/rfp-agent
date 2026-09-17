@@ -78,7 +78,7 @@ async def test_generate_proposal_content_parallel_batches():
     def on_progress(**fields):
         progress_calls.append(fields)
 
-    async def fake_batch(keys, summary, metadata):
+    async def fake_batch(keys, summary, requirements_digest, metadata):
         return {k: f"Section for {k}" for k in keys}
 
     with patch(

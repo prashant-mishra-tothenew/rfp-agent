@@ -2,9 +2,12 @@ import tempfile
 from pathlib import Path
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 from app.proposal.pptx_template import (
     FIXED_SLIDE_INDICES,
+    SUCCESS_STORY_SLIDE_INDICES,
+    WHY_TTN_SLIDE_INDEX,
     _shape_char_capacity,
     _truncate_text,
     render_pptx_from_template,
@@ -24,37 +27,78 @@ def test_template_path_exists():
     assert resolve_pptx_template_path().exists()
 
 
-def test_render_preserves_fixed_commercial_and_success_slides():
+def test_sparse_proposal_does_not_leave_title_only_slides():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Invest India",
+                "complianceMatrix": [
+                    {
+                        "requirementId": "REQ-001",
+                        "response": "Public portal for investment opportunities.",
+                        "status": "Partial",
+                    },
+                    {
+                        "requirementId": "REQ-002",
+                        "response": "Search across sectors and programmes.",
+                        "status": "Not supported",
+                    },
+                ],
+            },
+            output,
+            "rfp-sparse-001",
+        )
+        prs = Presentation(output)
+        assert len(prs.slides) == 26
+        for index in (2, 5, 7, 11, 25):
+            text = _slide_text(prs.slides[index])
+            assert len(text) > 40
+            assert "‹#›" not in text or text.replace("‹#›", "").strip()
+
+
+def test_render_preserves_why_ttn_and_success_slides():
     template_path = resolve_pptx_template_path()
     template_prs = Presentation(str(template_path))
-    commercial_before = _slide_text(template_prs.slides[20])
-    success_before = _slide_text(template_prs.slides[23])
+    why_ttn_before = _slide_text(template_prs.slides[WHY_TTN_SLIDE_INDEX])
+    success_index = min(SUCCESS_STORY_SLIDE_INDICES)
+    success_before = _slide_text(template_prs.slides[success_index])
 
     with tempfile.TemporaryDirectory() as tmp:
         output = str(Path(tmp) / "proposal.pptx")
         render_pptx_from_template(
             {
                 "customer": "Acme Corp",
+                "projectTitle": "Acme Mobile Platform",
                 "executiveSummary": "Custom executive summary for Acme.",
                 "understandingOfRequirements": "Custom requirements understanding.",
                 "proposedSolution": "Custom proposed solution for Acme retail platform.",
                 "technicalApproach": "API-first architecture | Microservices on AWS EKS",
-                "relevantExperience": "TTN has delivered 50+ commerce platforms globally.",
+                "engagementModel": "Iterative agile delivery with fortnightly demos.",
+                "inScope": "Mobile app delivery\nAPI integration",
+                "outOfScope": "Hardware procurement\nThird-party license costs",
             },
             output,
             "rfp-test-001",
         )
 
         result_prs = Presentation(output)
-        assert len(result_prs.slides) == len(template_prs.slides)
-        assert _slide_text(result_prs.slides[20]) == commercial_before
-        assert _slide_text(result_prs.slides[23]) == success_before
-        assert "Acme Corp" in _slide_text(result_prs.slides[0])
+        assert _slide_text(result_prs.slides[WHY_TTN_SLIDE_INDEX]) == why_ttn_before
+        assert _slide_text(result_prs.slides[success_index]) == success_before
+        cover = _slide_text(result_prs.slides[0])
+        assert "Acme Mobile Platform" in cover
+        assert "Racing Queensland" not in cover
         assert "Custom executive summary" in _slide_text(result_prs.slides[2])
         slide5_text = _slide_text(result_prs.slides[5])
         assert "Custom proposed solution" in slide5_text
         assert "Races & Profiles" not in slide5_text
-        assert "TTN has delivered 50+ commerce platforms" in _slide_text(result_prs.slides[3])
+        scope_text = _slide_text(result_prs.slides[9])
+        assert "Mobile app delivery" in scope_text
+        assert "Hardware procurement" in scope_text
+        assert "Procurement & Maintenance of Infrastructure" not in scope_text
+        engagement_text = _slide_text(result_prs.slides[20])
+        assert "Iterative agile delivery" in engagement_text
+        assert "AUD 78,727" not in engagement_text
 
 
 def test_truncate_text_respects_limit():
@@ -109,6 +153,88 @@ def test_render_distributes_solution_cards_without_template_overflow():
             assert "Races & Profiles" not in shape.text
 
 
+def test_architecture_slide_does_not_overlay_diagram_text():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Acme Corp",
+                "technicalApproach": "API Gateway | Federated GraphQL layer\nCDN | Global edge caching",
+            },
+            output,
+            "rfp-test-arch",
+        )
+        slide = Presentation(output).slides[12]
+        overlay = [
+            shape.text
+            for shape in slide.shapes
+            if hasattr(shape, "text_frame")
+            and getattr(shape, "width", 0) > 3_500_000
+            and len(shape.text.strip()) > 40
+        ]
+        assert overlay == []
+        assert _slide_text(slide).startswith("Proposed High Level Architecture")
+
+
+def test_comparison_and_project_plan_slides_receive_content():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Acme Corp",
+                "technicalApproach": "Next.js storefront | Headless CMS integration",
+                "implementationMethodology": "Discovery workshops\nAgile delivery sprints\nUAT and launch",
+            },
+            output,
+            "rfp-plan-test",
+        )
+        prs = Presentation(output)
+        comparison_table = next(
+            sh.table
+            for sh in prs.slides[14].shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.TABLE
+        )
+        assert comparison_table.cell(1, 0).text.strip()
+        assert comparison_table.cell(1, 1).text.strip()
+
+        plan_table = next(
+            sh.table
+            for sh in prs.slides[18].shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.TABLE
+        )
+        assert plan_table.cell(1, 0).text.strip()
+        assert any(
+            plan_table.cell(1, col).text.strip() == "●"
+            for col in range(1, len(plan_table.columns))
+        )
+
+
+def test_table_slides_keep_titles_after_footnote_clear():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Acme Corp",
+                "technicalApproach": "API Gateway | GraphQL federation layer",
+            },
+            output,
+            "rfp-test-titles",
+        )
+        prs = Presentation(output)
+        for index, expected in (
+            (13, "Architecture Considerations"),
+            (14, "Mobile Development Platform - Comparison"),
+        ):
+            titles = [
+                shape.text.strip()
+                for shape in prs.slides[index].shapes
+                if hasattr(shape, "text_frame")
+                and shape.top < 900_000
+                and shape.text.strip()
+            ]
+            assert expected in titles
+
+
 def test_render_clears_table_footnote():
     with tempfile.TemporaryDirectory() as tmp:
         output = str(Path(tmp) / "proposal.pptx")
@@ -121,7 +247,7 @@ def test_render_clears_table_footnote():
             "rfp-test-003",
         )
 
-        slide = Presentation(output).slides[14]
+        slide = Presentation(output).slides[13]
         footnotes = [
             shape.text
             for shape in slide.shapes
@@ -131,12 +257,16 @@ def test_render_clears_table_footnote():
             and shape.text.strip() != "‹#›"
         ]
         assert footnotes == []
-        assert "Both Flutter and React Native" not in _slide_text(slide)
+        table_shapes = [
+            shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.TABLE
+        ]
+        assert table_shapes
+        table = table_shapes[0].table
+        assert "API Gateway" in table.cell(1, 0).text
 
 
-def test_fixed_slide_indices_cover_commercial_and_success_sections():
-    assert 20 in FIXED_SLIDE_INDICES
-    assert 21 in FIXED_SLIDE_INDICES
-    assert 23 in FIXED_SLIDE_INDICES
-    assert 24 in FIXED_SLIDE_INDICES
-    assert 25 in FIXED_SLIDE_INDICES
+def test_fixed_slide_indices_cover_why_ttn_and_success_sections():
+    assert WHY_TTN_SLIDE_INDEX in FIXED_SLIDE_INDICES
+    assert SUCCESS_STORY_SLIDE_INDICES <= FIXED_SLIDE_INDICES
+    assert 9 not in FIXED_SLIDE_INDICES
+    assert 20 not in FIXED_SLIDE_INDICES

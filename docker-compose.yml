@@ -54,6 +54,16 @@ services:
       timeout: 20s
       retries: 3
 
+  attu:
+    image: zilliz/attu:v2.4.12
+    environment:
+      MILVUS_URL: milvus:19530
+    ports:
+      - "8080:3000"
+    depends_on:
+      milvus:
+        condition: service_healthy
+
   ollama:
     image: ollama/ollama:latest
     ports:

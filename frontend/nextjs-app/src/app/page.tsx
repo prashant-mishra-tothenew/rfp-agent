@@ -3,6 +3,7 @@
 import { Suspense, useCallback } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { KnowledgeUploadPanel } from "@/components/KnowledgeUploadPanel";
+import { RfpReviewQueue } from "@/components/RfpReviewQueue";
 import { RfpUploadPanel } from "@/components/RfpUploadPanel";
 import {
   WorkspaceTab,
@@ -34,7 +35,10 @@ function HomeContent() {
 
       <div style={{ marginTop: "1.5rem" }}>
         {activeTab === "generate" ? (
-          <RfpUploadPanel />
+          <>
+            <RfpReviewQueue />
+            <RfpUploadPanel />
+          </>
         ) : (
           <KnowledgeUploadPanel />
         )}

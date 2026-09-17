@@ -22,9 +22,7 @@ from pptx.enum.shapes import MSO_SHAPE_TYPE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SOURCE = (
-    REPO_ROOT
-    / "templates"
-    / "TTN Proposal for Mobile App Development _ Racing Queensland v1.0 (2).pptx"
+    REPO_ROOT / "templates" / "TTN Proposal for Mobile App Development .pptx"
 )
 DEFAULT_OUTPUT = REPO_ROOT / "templates" / "proposal-template.pptx"
 
