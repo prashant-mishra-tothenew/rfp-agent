@@ -1,17 +1,21 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import { AppNav } from "@/components/AppNav";
 import { PipelineLoader } from "@/components/PipelineLoader";
 import { PipelineStepper } from "@/components/PipelineStepper";
 import { ProposalLoader } from "@/components/ProposalLoader";
+import { useRfpActor } from "@/components/RfpActorProvider";
 import { Spinner } from "@/components/Spinner";
 import {
   downloadUrl,
   getPipelineStatus,
   getRequirements,
   getRfp,
+  publishRfpForReview,
+  RfpSubmissionStatus,
+  saveRfpAsDraft,
   PipelineStatus,
   pollPipelineUntilDone,
   ProposalStatus,
@@ -46,10 +50,18 @@ const REVIEW_COLORS: Record<string, string> = {
   accepted: "#16a34a",
   rejected: "#dc2626",
   edited: "#ca8a04",
+  draft_edited: "#2563eb",
   pending: "#94a3b8",
 };
 
+function reviewStatusLabel(status: string): string {
+  if (status === "draft_edited") return "draft updated";
+  return status;
+}
+
 export default function RfpDetailPage() {
+  const { role } = useRfpActor();
+  const isReviewer = role === "sme";
   const params = useParams();
   const rfpId = params.id as string;
   const startedRef = useRef(false);
@@ -65,6 +77,7 @@ export default function RfpDetailPage() {
   const [proposalReady, setProposalReady] = useState(false);
   const [pipelineError, setPipelineError] = useState("");
   const [reviewError, setReviewError] = useState("");
+  const [proposalStale, setProposalStale] = useState(false);
   const [pipelineProgress, setPipelineProgress] = useState<PipelineStatus | null>(
     null
   );
@@ -74,6 +87,10 @@ export default function RfpDetailPage() {
     null
   );
   const [proposalElapsed, setProposalElapsed] = useState(0);
+  const [submissionStatus, setSubmissionStatus] =
+    useState<RfpSubmissionStatus>("published");
+  const [submissionBusy, setSubmissionBusy] = useState(false);
+  const [submissionMessage, setSubmissionMessage] = useState("");
 
   const loadData = useCallback(async () => {
     const [rfpData, reqs] = await Promise.all([
@@ -82,6 +99,9 @@ export default function RfpDetailPage() {
     ]);
 
     setRequirements(reqs);
+
+    const rawStatus = rfpData.rfp?.submission_status as string | undefined;
+    setSubmissionStatus(rawStatus === "draft" ? "draft" : "published");
 
     if (rfpData.rfp?.metadata) {
       try {
@@ -118,6 +138,8 @@ export default function RfpDetailPage() {
       setLoading(true);
       setStep("processing");
       setPipelineError("");
+      setSubmissionMessage("");
+      setSubmissionStatus("draft");
       setPipelineProgress({
         status: "running",
         progress: {
@@ -143,6 +165,9 @@ export default function RfpDetailPage() {
         const reqs = await getRequirements(rfpId);
         setRequirements(reqs);
         setStep("done");
+        const rfpData = await getRfp(rfpId);
+        const rawStatus = rfpData.rfp?.submission_status as string | undefined;
+        setSubmissionStatus(rawStatus === "draft" ? "draft" : "published");
       } catch (err) {
         console.error(err);
         setPipelineError(
@@ -210,6 +235,42 @@ export default function RfpDetailPage() {
     await runPipeline(false);
   }
 
+  async function handleSaveDraft() {
+    setSubmissionBusy(true);
+    setSubmissionMessage("");
+    try {
+      const result = await saveRfpAsDraft(rfpId);
+      setSubmissionStatus(result.submissionStatus);
+      setSubmissionMessage(
+        "Saved as draft. Reviewers will not see this RFP until you publish."
+      );
+    } catch (err) {
+      setSubmissionMessage(
+        err instanceof Error ? err.message : "Could not save as draft"
+      );
+    } finally {
+      setSubmissionBusy(false);
+    }
+  }
+
+  async function handlePublish() {
+    setSubmissionBusy(true);
+    setSubmissionMessage("");
+    try {
+      const result = await publishRfpForReview(rfpId);
+      setSubmissionStatus(result.submissionStatus);
+      setSubmissionMessage(
+        "Published for review. Reviewers can now see this RFP in their queue."
+      );
+    } catch (err) {
+      setSubmissionMessage(
+        err instanceof Error ? err.message : "Could not publish"
+      );
+    } finally {
+      setSubmissionBusy(false);
+    }
+  }
+
   async function handleReview(
     reqId: string,
     action: "accept" | "reject" | "edit"
@@ -224,6 +285,9 @@ export default function RfpDetailPage() {
       }
       const reqs = await getRequirements(rfpId);
       setRequirements(reqs);
+      if (proposalReady) {
+        setProposalStale(true);
+      }
     } catch (err) {
       setReviewError(
         err instanceof Error ? err.message : "Review action failed"
@@ -247,6 +311,16 @@ export default function RfpDetailPage() {
     try {
       await waitForProposal(rfpId, setProposalProgress);
       setProposalReady(true);
+      setProposalStale(false);
+      const rfpData = await getRfp(rfpId);
+      if (rfpData.rfp?.metadata) {
+        try {
+          const meta = JSON.parse(rfpData.rfp.metadata as string);
+          if (meta.compliance) setCompliance(meta.compliance);
+        } catch {
+          // ignore invalid metadata
+        }
+      }
     } catch (err) {
       setPipelineError(
         err instanceof Error ? err.message : "Proposal generation failed"
@@ -270,12 +344,137 @@ export default function RfpDetailPage() {
   const summary = compliance?.summary as Record<string, number> | undefined;
   const progress = pipelineProgress?.progress;
   const isProcessing = step === "processing";
+  const analysisReady = step === "done" && requirements.length > 0;
+  const showSubmissionControls = !isReviewer && analysisReady && !isProcessing;
+
+  const reviewProgress = useMemo(() => {
+    const stats = { total: 0, pending: 0, accepted: 0, rejected: 0, edited: 0 };
+    for (const req of requirements) {
+      if (!req.response) continue;
+      stats.total += 1;
+      const status = req.response.review_status || "pending";
+      if (status === "accepted") stats.accepted += 1;
+      else if (status === "rejected") stats.rejected += 1;
+      else if (status === "edited") stats.edited += 1;
+      else if (status === "draft_edited") stats.pending += 1;
+      else stats.pending += 1;
+    }
+    return stats;
+  }, [requirements]);
 
   return (
     <div>
       <AppNav active="generate" />
 
       <h2>RFP Analysis</h2>
+
+      {!isReviewer && isProcessing && (
+        <p
+          style={{
+            margin: "0 0 1rem",
+            fontSize: "0.875rem",
+            color: "#64748b",
+          }}
+        >
+          Analysis in progress — draft and publish options appear when the pipeline
+          finishes.
+        </p>
+      )}
+
+      {showSubmissionControls && (
+        <div
+          style={{
+            display: "flex",
+            flexWrap: "wrap",
+            alignItems: "center",
+            gap: "0.75rem",
+            marginBottom: "1rem",
+            padding: "0.75rem 1rem",
+            background: submissionStatus === "draft" ? "#eff6ff" : "#ecfdf5",
+            border: `1px solid ${submissionStatus === "draft" ? "#93c5fd" : "#6ee7b7"}`,
+            borderRadius: 8,
+            fontSize: "0.875rem",
+          }}
+        >
+          <span style={{ flex: "1 1 200px" }}>
+            <strong>
+              {submissionStatus === "draft" ? "Draft" : "Published"}
+            </strong>
+            {" — "}
+            {submissionStatus === "draft"
+              ? "Only you can see this RFP. Publish when draft answers are ready for reviewer."
+              : "Visible to reviewers. Use Save as draft to hide it again while you keep editing."}
+          </span>
+          {submissionStatus === "published" && (
+            <button
+              type="button"
+              onClick={() => void handleSaveDraft()}
+              disabled={submissionBusy}
+              style={btnStyle("#64748b", submissionBusy)}
+            >
+              Save as draft
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void handlePublish()}
+            disabled={submissionBusy || submissionStatus === "published"}
+            style={btnStyle(
+              "#2563eb",
+              submissionBusy || submissionStatus === "published"
+            )}
+          >
+            {submissionStatus === "published"
+              ? "Published for review"
+              : "Publish for review"}
+          </button>
+        </div>
+      )}
+      {showSubmissionControls && submissionMessage && (
+        <p
+          style={{
+            margin: "0 0 1rem",
+            fontSize: "0.875rem",
+            color: submissionMessage.includes("Published") ? "#047857" : "#475569",
+          }}
+        >
+          {submissionMessage}
+        </p>
+      )}
+
+      {step === "done" && reviewProgress.total > 0 && (
+        <div
+          style={{
+            background: isReviewer ? "#fffbeb" : "#f8fafc",
+            border: `1px solid ${isReviewer ? "#fcd34d" : "#e2e8f0"}`,
+            borderRadius: 8,
+            padding: "0.75rem 1rem",
+            marginBottom: "1rem",
+            fontSize: "0.875rem",
+          }}
+        >
+          {isReviewer ? (
+            <>
+              <strong>Reviewer:</strong> Accept, edit, or reject each AI response below.
+              Progress: {reviewProgress.accepted + reviewProgress.edited} accepted or
+              edited · {reviewProgress.pending} pending · {reviewProgress.rejected}{" "}
+              rejected · {reviewProgress.total} total
+            </>
+          ) : (
+            <>
+              <strong>Contributor:</strong> Use <strong>Edit draft</strong> on each answer, then{" "}
+              <strong>Publish for review</strong> when ready. Reviewers only see published RFPs.
+              {submissionStatus === "published" && reviewProgress.pending > 0 && (
+                <>
+                  {" "}
+                  {reviewProgress.pending} response
+                  {reviewProgress.pending === 1 ? "" : "s"} awaiting reviewer approval.
+                </>
+              )}
+            </>
+          )}
+        </div>
+      )}
 
       {isProcessing && (
         <>
@@ -371,6 +570,17 @@ export default function RfpDetailPage() {
         )}
         {proposalReady && (
           <>
+            {proposalStale && (
+              <span
+                style={{
+                  fontSize: "0.875rem",
+                  color: "#b45309",
+                  alignSelf: "center",
+                }}
+              >
+                Edits are saved — click Generate Proposal again before download.
+              </span>
+            )}
             <a href={downloadUrl(rfpId, "docx")} style={linkStyle}>
               Download DOCX
             </a>
@@ -501,7 +711,7 @@ export default function RfpDetailPage() {
                         borderRadius: 4,
                       }}
                     >
-                      Review: {reviewStatus}
+                      Review: {reviewStatusLabel(reviewStatus)}
                     </span>
                   )}
                   {resp.confidence > 0 && (
@@ -530,7 +740,7 @@ export default function RfpDetailPage() {
                         Cancel
                       </button>
                     </>
-                  ) : (
+                  ) : isReviewer ? (
                     <>
                       <button
                         type="button"
@@ -563,6 +773,17 @@ export default function RfpDetailPage() {
                         {reviewStatus === "rejected" ? "Rejected" : "Reject"}
                       </button>
                     </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingId(req.req_id);
+                        setEditText(resp.response);
+                      }}
+                      style={smallBtn("#2563eb")}
+                    >
+                      Edit draft
+                    </button>
                   )}
                 </div>
               </>

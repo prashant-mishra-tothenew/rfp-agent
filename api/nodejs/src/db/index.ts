@@ -73,3 +73,14 @@ const rfpColumns = db.prepare("PRAGMA table_info(rfps)").all() as Array<{
 if (!rfpColumns.some((column) => column.name === "website_url")) {
   db.exec("ALTER TABLE rfps ADD COLUMN website_url TEXT");
 }
+if (!rfpColumns.some((column) => column.name === "owner_id")) {
+  db.exec("ALTER TABLE rfps ADD COLUMN owner_id TEXT");
+}
+if (!rfpColumns.some((column) => column.name === "submission_status")) {
+  db.exec(
+    "ALTER TABLE rfps ADD COLUMN submission_status TEXT DEFAULT 'published'"
+  );
+}
+if (!rfpColumns.some((column) => column.name === "published_at")) {
+  db.exec("ALTER TABLE rfps ADD COLUMN published_at TEXT");
+}

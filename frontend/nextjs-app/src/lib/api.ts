@@ -1,4 +1,14 @@
+import { rfpActorHeaders, rfpActorQueryString } from "./rfpActor";
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+
+function withActor(init: RequestInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  for (const [key, value] of Object.entries(rfpActorHeaders())) {
+    headers.set(key, value);
+  }
+  return { ...init, headers };
+}
 
 export async function uploadRfp(
   file: File | null,
@@ -12,7 +22,10 @@ export async function uploadRfp(
   form.append("customer", customer);
   form.append("industry", industry);
 
-  const res = await fetch(`${API_URL}/api/rfps`, { method: "POST", body: form });
+  const res = await fetch(
+    `${API_URL}/api/rfps`,
+    withActor({ method: "POST", body: form })
+  );
   if (!res.ok) {
     if (res.status === 413) {
       throw new Error("File is too large. Maximum upload size is 50 MB per file.");
@@ -40,9 +53,10 @@ export interface PipelineStatus {
 }
 
 export async function startPipeline(rfpId: string) {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/pipeline`, {
-    method: "POST",
-  });
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/pipeline`,
+    withActor({ method: "POST" })
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || body.message || `Pipeline failed (${res.status})`);
@@ -51,7 +65,10 @@ export async function startPipeline(rfpId: string) {
 }
 
 export async function getPipelineStatus(rfpId: string): Promise<PipelineStatus> {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/pipeline/status`);
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/pipeline/status`,
+    withActor()
+  );
   if (!res.ok) throw new Error("Failed to fetch pipeline status");
   return res.json();
 }
@@ -86,14 +103,80 @@ export async function waitForPipeline(
   return pollPipelineUntilDone(rfpId, onProgress);
 }
 
+export interface RfpReviewSummary {
+  total: number;
+  pending: number;
+  accepted: number;
+  rejected: number;
+  edited: number;
+}
+
+export type RfpSubmissionStatus = "draft" | "published";
+
+export interface RfpListItem {
+  id: string;
+  filename: string;
+  customer: string;
+  industry: string;
+  status: string;
+  submissionStatus: RfpSubmissionStatus;
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  coveragePercent: number | null;
+  review: RfpReviewSummary;
+  needsReview: boolean;
+}
+
+export async function listRfps(): Promise<RfpListItem[]> {
+  const res = await fetch(`${API_URL}/api/rfps`, withActor());
+  if (!res.ok) throw new Error("Failed to load RFP list");
+  return res.json();
+}
+
 export async function getRfp(rfpId: string) {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}`);
+  const res = await fetch(`${API_URL}/api/rfps/${rfpId}`, withActor());
   if (!res.ok) throw new Error("Failed to fetch RFP");
   return res.json();
 }
 
+export async function publishRfpForReview(
+  rfpId: string
+): Promise<{ submissionStatus: RfpSubmissionStatus }> {
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/publish`,
+    withActor({ method: "POST" })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      (body as { error?: string }).error || "Failed to publish RFP"
+    );
+  }
+  return res.json();
+}
+
+export async function saveRfpAsDraft(
+  rfpId: string
+): Promise<{ submissionStatus: RfpSubmissionStatus }> {
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/draft`,
+    withActor({ method: "POST" })
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    throw new Error(
+      (body as { error?: string }).error || "Failed to save as draft"
+    );
+  }
+  return res.json();
+}
+
 export async function getRequirements(rfpId: string) {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/requirements`);
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/requirements`,
+    withActor()
+  );
   if (!res.ok) throw new Error("Failed to fetch requirements");
   return res.json();
 }
@@ -104,11 +187,14 @@ export async function reviewResponse(
   action: "accept" | "reject" | "edit",
   response?: string
 ) {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/review`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ requirementId, action, response }),
-  });
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/review`,
+    withActor({
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requirementId, action, response }),
+    })
+  );
   if (!res.ok) throw new Error("Review failed");
   return res.json();
 }
@@ -132,9 +218,10 @@ export interface ProposalStatus {
 }
 
 export async function startProposal(rfpId: string) {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/proposal`, {
-    method: "POST",
-  });
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/proposal`,
+    withActor({ method: "POST" })
+  );
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || "Proposal generation failed");
@@ -143,7 +230,10 @@ export async function startProposal(rfpId: string) {
 }
 
 export async function getProposalStatus(rfpId: string): Promise<ProposalStatus> {
-  const res = await fetch(`${API_URL}/api/rfps/${rfpId}/proposal/status`);
+  const res = await fetch(
+    `${API_URL}/api/rfps/${rfpId}/proposal/status`,
+    withActor()
+  );
   if (!res.ok) throw new Error("Failed to fetch proposal status");
   return res.json();
 }
@@ -179,7 +269,7 @@ export async function waitForProposal(
 }
 
 export function downloadUrl(rfpId: string, format: "docx" | "pptx" | "pdf") {
-  return `${API_URL}/api/rfps/${rfpId}/download/${format}`;
+  return `${API_URL}/api/rfps/${rfpId}/download/${format}?${rfpActorQueryString()}`;
 }
 
 export interface KnowledgeDocument {

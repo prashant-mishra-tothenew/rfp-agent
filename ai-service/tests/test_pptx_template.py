@@ -27,6 +27,36 @@ def test_template_path_exists():
     assert resolve_pptx_template_path().exists()
 
 
+def test_sparse_proposal_does_not_leave_title_only_slides():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Invest India",
+                "complianceMatrix": [
+                    {
+                        "requirementId": "REQ-001",
+                        "response": "Public portal for investment opportunities.",
+                        "status": "Partial",
+                    },
+                    {
+                        "requirementId": "REQ-002",
+                        "response": "Search across sectors and programmes.",
+                        "status": "Not supported",
+                    },
+                ],
+            },
+            output,
+            "rfp-sparse-001",
+        )
+        prs = Presentation(output)
+        assert len(prs.slides) == 26
+        for index in (2, 5, 7, 11, 25):
+            text = _slide_text(prs.slides[index])
+            assert len(text) > 40
+            assert "‹#›" not in text or text.replace("‹#›", "").strip()
+
+
 def test_render_preserves_why_ttn_and_success_slides():
     template_path = resolve_pptx_template_path()
     template_prs = Presentation(str(template_path))
@@ -144,6 +174,39 @@ def test_architecture_slide_does_not_overlay_diagram_text():
         ]
         assert overlay == []
         assert _slide_text(slide).startswith("Proposed High Level Architecture")
+
+
+def test_comparison_and_project_plan_slides_receive_content():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Acme Corp",
+                "technicalApproach": "Next.js storefront | Headless CMS integration",
+                "implementationMethodology": "Discovery workshops\nAgile delivery sprints\nUAT and launch",
+            },
+            output,
+            "rfp-plan-test",
+        )
+        prs = Presentation(output)
+        comparison_table = next(
+            sh.table
+            for sh in prs.slides[14].shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.TABLE
+        )
+        assert comparison_table.cell(1, 0).text.strip()
+        assert comparison_table.cell(1, 1).text.strip()
+
+        plan_table = next(
+            sh.table
+            for sh in prs.slides[18].shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.TABLE
+        )
+        assert plan_table.cell(1, 0).text.strip()
+        assert any(
+            plan_table.cell(1, col).text.strip() == "●"
+            for col in range(1, len(plan_table.columns))
+        )
 
 
 def test_table_slides_keep_titles_after_footnote_clear():

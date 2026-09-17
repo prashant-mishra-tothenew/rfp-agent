@@ -192,6 +192,15 @@ export async function convertProposalPdf(docxPath: string) {
   );
 }
 
+export async function runComplianceCheck(data: {
+  requirements: Array<Record<string, unknown>>;
+  responses: Array<Record<string, unknown>>;
+}) {
+  return aiRequest<Record<string, unknown>>("/ai/rfp/compliance", {
+    body: JSON.stringify(data),
+  });
+}
+
 export async function generateProposal(data: {
   rfp_id: string;
   metadata: Record<string, unknown>;

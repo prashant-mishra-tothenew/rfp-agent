@@ -74,14 +74,16 @@ SLIDE_TITLES: dict[int, str] = {
     25: "Quick Recap",
 }
 
-# Slides with diagrams — never pour paragraphs over the layout.
-DIAGRAM_OVERLAY_SLIDE_INDICES: frozenset[int] = frozenset({12, 16, 17, 18})
+ARCHITECTURE_SLIDE_INDEX = 12
+GOVERNANCE_SLIDE_INDEX = 17
+PROJECT_PLAN_SLIDE_INDEX = 18
+
+# Slides with dense diagrams — short annotations only (not architecture/governance/plan).
+DIAGRAM_OVERLAY_SLIDE_INDICES: frozenset[int] = frozenset({16})
 
 # Small annotation boxes on diagram slides (content key).
 DIAGRAM_ANNOTATION_CONTENT: dict[int, str] = {
     16: "implementationMethodology",
-    17: "supportAndSla",
-    18: "implementationMethodology",
 }
 
 # Two-column tables filled from "left | right" lines.
@@ -101,6 +103,20 @@ SLIDE_CONTENT_MAP: dict[int, str] = {
     11: "proposedSolution",
     25: "executiveSummary",
 }
+
+# Extra proposal keys tried when the primary slide field is empty.
+SLIDE_CONTENT_FALLBACKS: dict[int, tuple[str, ...]] = {
+    2: ("understandingOfRequirements", "proposedSolution"),
+    5: ("understandingOfRequirements", "technicalApproach"),
+    6: ("technicalApproach", "supportAndSla"),
+    7: ("proposedSolution", "architectureOverview"),
+    8: ("understandingOfRequirements", "technicalApproach"),
+    11: ("technicalApproach", "implementationMethodology"),
+    13: ("architectureOverview", "proposedSolution"),
+    25: ("understandingOfRequirements", "proposedSolution"),
+}
+
+EMPTY_TRAILING_SLIDE_INDEX = 26
 
 TITLE_PLACEHOLDER_MARKERS = (
     "Click to add title",
@@ -387,6 +403,225 @@ def _update_two_column_table(table: Any, text: str) -> bool:
     return filled
 
 
+def _table_shapes(slide: Any) -> list[Any]:
+    return [
+        shape for shape in slide.shapes if shape.shape_type == MSO_SHAPE_TYPE.TABLE
+    ]
+
+
+def _comparison_lines(proposal: dict[str, Any]) -> str:
+    raw = _coerce_text(proposal.get("mobilePlatformComparison", ""))
+    if raw and sum(1 for line in raw.split("\n") if line.count("|") >= 2) >= 2:
+        return raw
+
+    tech = _coerce_text(proposal.get("technicalApproach", "")).lower()
+    solution = _coerce_text(proposal.get("proposedSolution", "")).lower()
+    combined = f"{tech} {solution}"
+    if "flutter" in combined and "react" not in combined:
+        col_b, col_c = "Flutter", "React Native"
+    elif "react native" in combined or "react" in combined:
+        col_b, col_c = "React Native", "Flutter"
+    else:
+        col_b, col_c = "Recommended option", "Alternative option"
+
+    return "\n".join(
+        [
+            f"Time to market | {col_b} | {col_c}",
+            "Native performance | High | High",
+            "Team skill fit | Based on existing engineering skills | Based on mobile specialization",
+            "UI consistency | Strong component libraries | Strong widget catalog",
+            "Integration with APIs | REST/GraphQL friendly | REST/GraphQL friendly",
+            "Maintainability | Modular architecture | Modular architecture",
+            "Recommendation | Aligns with stated RFP stack preferences | Viable alternate if skills differ",
+        ]
+    )
+
+
+def _update_comparison_slide(slide: Any, proposal: dict[str, Any]) -> None:
+    title = SLIDE_TITLES[TABLE_COMPARISON_SLIDE_INDEX]
+    _ensure_slide_title(slide, title)
+    text = _comparison_lines(proposal)
+    tables = _table_shapes(slide)
+    if tables:
+        table = tables[0].table
+        if not _update_three_column_table(table, text):
+            _default_comparison_rows(table, proposal)
+    recommendation = _coerce_text(proposal.get("mobilePlatformComparison", ""))
+    if not recommendation:
+        recommendation = (
+            "Recommendation follows the technical approach and skills implied by the RFP requirements."
+        )
+    for shape in _iter_text_shapes(slide):
+        if getattr(shape, "top", 0) > 4_200_000 and _shape_char_capacity(shape) >= 80:
+            shape.text = _truncate_text(recommendation.split("\n")[-1], 220)
+            _apply_body_font(shape.text_frame)
+            break
+
+
+def _default_comparison_rows(table: Any, proposal: dict[str, Any]) -> None:
+    lines = _content_to_lines(_comparison_lines(proposal))
+    _update_three_column_table(table, "\n".join(lines))
+
+
+def _update_architecture_slide(slide: Any, proposal: dict[str, Any]) -> None:
+    _ensure_slide_title(slide, SLIDE_TITLES[ARCHITECTURE_SLIDE_INDEX])
+    _purge_template_sample_text(slide)
+
+    text = _coerce_text(
+        proposal.get("architectureOverview") or proposal.get("technicalApproach", "")
+    )
+    lines = _content_to_lines(text)
+    customer = _customer_name(proposal)
+    stack_label = _truncate_text(lines[0] if lines else f"{customer} Platform", 45)
+
+    title_shape = _find_title_shape(list(_iter_text_shapes(slide)))
+    for shape in _iter_text_shapes(slide):
+        if _is_title_shape(shape, title_shape) or _is_footer_shape(shape):
+            continue
+        label = shape.text.strip()
+        if label in {"Mobile Application", "Mobile  User", "Mobile User"}:
+            shape.text = stack_label
+        elif label == "Backend APIs" and len(lines) > 1:
+            shape.text = _truncate_text(lines[1], 35)
+        elif label == "Firebase" and len(lines) > 2:
+            shape.text = _truncate_text(lines[2], 35)
+
+    layer_boxes = sorted(
+        [
+            shape
+            for shape in _iter_text_shapes(slide)
+            if 100 <= _shape_char_capacity(shape) <= 280
+            and 2_000_000 < getattr(shape, "left", 0) < 6_500_000
+            and getattr(shape, "top", 0) > 2_000_000
+        ],
+        key=lambda item: item.top,
+    )
+    layer_lines = lines[1:5] if len(lines) > 1 else lines[:4]
+    for index, shape in enumerate(layer_boxes[:2]):
+        if index < len(layer_lines):
+            _set_text_frame(shape.text_frame, layer_lines[index], shape, max_bullets=4)
+        else:
+            shape.text_frame.clear()
+
+    _clear_center_overlay_text(slide, title_shape)
+
+
+def _governance_notes_shape(slide: Any, title_shape: Any | None) -> Any | None:
+    candidates: list[tuple[int, Any]] = []
+    for shape in _iter_text_shapes(slide):
+        if _is_title_shape(shape, title_shape) or _is_footer_shape(shape):
+            continue
+        top = getattr(shape, "top", 0)
+        width = getattr(shape, "width", 0)
+        capacity = _shape_char_capacity(shape)
+        if 3_200_000 <= top <= 3_700_000 and 2_000_000 <= width <= 5_500_000:
+            if 200 <= capacity <= 400:
+                candidates.append((capacity, shape))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _clear_governance_overlays(slide: Any, title_shape: Any | None) -> None:
+    for shape in _iter_text_shapes(slide):
+        if _is_title_shape(shape, title_shape) or _is_footer_shape(shape):
+            continue
+        if shape.shape_type == MSO_SHAPE_TYPE.TABLE:
+            continue
+        width = getattr(shape, "width", 0)
+        capacity = _shape_char_capacity(shape)
+        if width > 4_000_000 and capacity > 80:
+            shape.text_frame.clear()
+        elif _shape_has_sample_content(shape) and capacity > 80:
+            shape.text_frame.clear()
+
+
+def _update_governance_slide(slide: Any, proposal: dict[str, Any]) -> None:
+    _ensure_slide_title(slide, SLIDE_TITLES[GOVERNANCE_SLIDE_INDEX])
+    title_shape = _find_title_shape(list(_iter_text_shapes(slide)))
+    _clear_governance_overlays(slide, title_shape)
+    _apply_customer_substitutions(slide, proposal)
+
+    text = _coerce_text(
+        proposal.get("governanceModel")
+        or proposal.get("supportAndSla", "")
+    )
+    notes_shape = _governance_notes_shape(slide, title_shape)
+    if notes_shape and text.strip():
+        _set_text_frame(notes_shape.text_frame, text, notes_shape, max_bullets=5)
+    elif notes_shape:
+        notes_shape.text_frame.clear()
+
+
+def _parse_plan_phases(text: str) -> list[tuple[str, int, int]]:
+    """Parse project plan lines into (label, start_week, end_week) 1-based inclusive."""
+    phases: list[tuple[str, int, int]] = []
+    for line in _bullet_lines(text):
+        if "|" not in line:
+            continue
+        label, span = line.split("|", 1)
+        label = label.strip()
+        span = span.strip().lower()
+        start, end = 1, 2
+        if "week" in span:
+            digits = [int(part) for part in re.findall(r"\d+", span)]
+            if len(digits) >= 2:
+                start, end = digits[0], digits[1]
+            elif len(digits) == 1:
+                start, end = digits[0], digits[0]
+        else:
+            marks = [index + 1 for index, cell in enumerate(span.split("|")) if cell.strip()]
+            if marks:
+                start, end = marks[0], marks[-1]
+        phases.append((label, start, end))
+    return phases
+
+
+def _default_project_plan_phases(proposal: dict[str, Any]) -> list[tuple[str, int, int]]:
+    impl_lines = _bullet_lines(_coerce_text(proposal.get("implementationMethodology", "")))
+    labels = [
+        impl_lines[0] if impl_lines else "Discovery & Design",
+        impl_lines[1] if len(impl_lines) > 1 else "Iterative Development",
+        impl_lines[2] if len(impl_lines) > 2 else "UAT & Go-Live",
+        impl_lines[3] if len(impl_lines) > 3 else "Hypercare Support",
+    ]
+    spans = [(1, 2), (3, 9), (10, 12), (13, 15)]
+    return list(zip(labels, [s[0] for s in spans], [s[1] for s in spans]))
+
+
+def _update_project_plan_slide(slide: Any, proposal: dict[str, Any]) -> None:
+    _ensure_slide_title(slide, SLIDE_TITLES[PROJECT_PLAN_SLIDE_INDEX])
+    tables = _table_shapes(slide)
+    if not tables:
+        return
+
+    table = tables[0].table
+    plan_text = _coerce_text(proposal.get("projectPlan", ""))
+    phases = _parse_plan_phases(plan_text)
+    if not phases:
+        phases = _default_project_plan_phases(proposal)
+
+    for row_index in range(1, len(table.rows)):
+        phase_index = row_index - 1
+        if phase_index < len(phases):
+            label, start_week, end_week = phases[phase_index]
+            table.cell(row_index, 0).text = _truncate_text(label, 45)
+            for week_col in range(1, len(table.columns)):
+                week_num = week_col
+                mark = "●" if start_week <= week_num <= end_week else ""
+                table.cell(row_index, week_col).text = mark
+        else:
+            for col_index in range(len(table.columns)):
+                table.cell(row_index, col_index).text = ""
+
+    for shape in _iter_text_shapes(slide):
+        if getattr(shape, "top", 0) > 4_200_000 and "Flutter" in shape.text:
+            shape.text = (
+                "Timeline aligned to agreed scope; exact durations confirmed during discovery."
+            )
+            _apply_body_font(shape.text_frame)
+
+
 def _update_three_column_table(table: Any, text: str) -> bool:
     lines = _content_to_lines(text)
     filled = False
@@ -556,6 +791,10 @@ def _update_slide_body(slide: Any, text: str, slide_index: int | None = None) ->
             if shape not in cards:
                 shape.text_frame.clear()
         _update_multi_card_slide(body_shapes, text)
+        cards = [shape for shape in body_shapes if _shape_char_capacity(shape) >= 80]
+        if cards and not any(_shape_has_visible_text(shape) for shape in cards):
+            primary_shape = max(body_shapes, key=_shape_area)
+            _set_text_frame(primary_shape.text_frame, text, primary_shape)
         return
 
     primary_shape = max(body_shapes, key=_shape_area)
@@ -607,6 +846,75 @@ def _bullet_lines(text: str) -> list[str]:
     return [line.strip() for line in text.split("\n") if line.strip()]
 
 
+def _compliance_summary_text(proposal: dict[str, Any], max_items: int = 6) -> str:
+    matrix = proposal.get("complianceMatrix") or []
+    lines: list[str] = []
+    for row in matrix[:max_items]:
+        if not isinstance(row, dict):
+            continue
+        req_id = _coerce_text(row.get("requirementId", ""))
+        response = _truncate_text(_coerce_text(row.get("response", "")), 140)
+        if response:
+            prefix = f"{req_id}: " if req_id else ""
+            lines.append(f"• {prefix}{response}")
+    return "\n".join(lines)
+
+
+def _slide_has_meaningful_body(slide: Any) -> bool:
+    shapes = list(_iter_text_shapes(slide))
+    title_shape = _find_title_shape(shapes)
+    for shape in shapes:
+        if _is_footer_shape(shape) or _is_title_shape(shape, title_shape):
+            continue
+        if shape.shape_type == MSO_SHAPE_TYPE.TABLE:
+            table = shape.table
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text.strip() and cell.text.strip() not in SKIP_TEXT:
+                        return True
+            continue
+        text = shape.text.strip() if hasattr(shape, "text") else ""
+        if text and text not in SKIP_TEXT and len(text) > 24:
+            return True
+    return False
+
+
+def _minimal_placeholder(slide_index: int, proposal: dict[str, Any]) -> str:
+    customer = _customer_name(proposal)
+    title = SLIDE_TITLES.get(slide_index, "this engagement")
+    return (
+        f"TTN will tailor {title.lower()} for {customer} based on the analysed "
+        "requirements, agreed scope, and discovery outcomes."
+    )
+
+
+def _resolve_slide_text(proposal: dict[str, Any], slide_index: int) -> str:
+    keys: list[str] = []
+    primary = SLIDE_CONTENT_MAP.get(slide_index)
+    if primary:
+        keys.append(primary)
+    keys.extend(SLIDE_CONTENT_FALLBACKS.get(slide_index, ()))
+
+    seen: set[str] = set()
+    for key in keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        text = _coerce_text(proposal.get(key, ""))
+        if text.strip():
+            return text
+
+    if slide_index in {2, 25}:
+        summary = _compliance_summary_text(proposal)
+        if summary:
+            return summary
+    return ""
+
+
+def _shape_has_visible_text(shape: Any) -> bool:
+    return bool(shape.text.strip()) if hasattr(shape, "text") else False
+
+
 def _enrich_proposal_defaults(proposal: dict[str, Any]) -> None:
     """Avoid blank key slides when the LLM omits a section."""
     understanding = _coerce_text(proposal.get("understandingOfRequirements", ""))
@@ -618,6 +926,10 @@ def _enrich_proposal_defaults(proposal: dict[str, Any]) -> None:
             proposal["executiveSummary"] = "\n".join(understanding_lines[:4])
         elif understanding:
             proposal["executiveSummary"] = _truncate_text(understanding, 900)
+        else:
+            compliance_summary = _compliance_summary_text(proposal, max_items=4)
+            if compliance_summary:
+                proposal["executiveSummary"] = compliance_summary
 
     solution = _coerce_text(proposal.get("proposedSolution", ""))
     if not solution:
@@ -631,6 +943,23 @@ def _enrich_proposal_defaults(proposal: dict[str, Any]) -> None:
         source = _coerce_text(proposal.get("proposedSolution", "")) or understanding
         proposal["technicalApproach"] = _truncate_text(source, 1200)
 
+    if not _coerce_text(proposal.get("securityCompliance", "")):
+        proposal["securityCompliance"] = _truncate_text(
+            _coerce_text(proposal.get("supportAndSla", ""))
+            or _coerce_text(proposal.get("technicalApproach", "")),
+            1000,
+        ) or (
+            "Security and compliance aligned to organisational policies, "
+            "data protection requirements, and industry standards."
+        )
+
+    if not _coerce_text(proposal.get("assumptions", "")):
+        proposal["assumptions"] = (
+            "Client provides timely access to stakeholders, systems, and environments.\n"
+            "Requirements are baselined after discovery; material changes follow change control.\n"
+            "Third-party dependencies and licenses are provided or procured as agreed."
+        )
+
     impl = _coerce_text(proposal.get("implementationMethodology", ""))
     if not impl:
         proposal["implementationMethodology"] = _truncate_text(
@@ -642,6 +971,23 @@ def _enrich_proposal_defaults(proposal: dict[str, Any]) -> None:
         proposal["supportAndSla"] = (
             "Dedicated project governance with defined SLAs, escalation paths, "
             "and ongoing support aligned to agreed service levels."
+        )
+
+    if not _coerce_text(proposal.get("governanceModel", "")):
+        proposal["governanceModel"] = _truncate_text(support, 600)
+
+    if not _coerce_text(proposal.get("architectureOverview", "")):
+        proposal["architectureOverview"] = _truncate_text(
+            proposal.get("technicalApproach", ""), 1000
+        )
+
+    if not _coerce_text(proposal.get("mobilePlatformComparison", "")):
+        proposal["mobilePlatformComparison"] = _comparison_lines(proposal)
+
+    if not _coerce_text(proposal.get("projectPlan", "")):
+        phases = _default_project_plan_phases(proposal)
+        proposal["projectPlan"] = "\n".join(
+            f"{label} | weeks {start}-{end}" for label, start, end in phases
         )
 
 
@@ -703,6 +1049,27 @@ def _apply_customer_substitutions(slide: Any, proposal: dict[str, Any]) -> None:
 def _clear_template_bodies(slide: Any) -> None:
     _purge_template_sample_text(slide)
     _clear_slide_body_shapes(slide, keep_title=True)
+
+
+def _backfill_sparse_content_slides(
+    prs: Presentation, proposal: dict[str, Any]
+) -> None:
+    """Fill title-only slides after the main pass (e.g. when template cards were cleared)."""
+    indices = (
+        set(SLIDE_CONTENT_MAP)
+        | set(TABLE_TWO_COLUMN_SLIDES)
+        | {IN_SCOPE_SLIDE_INDEX, ENGAGEMENT_SLIDE_INDEX}
+    )
+    for index in sorted(indices):
+        if index in FIXED_SLIDE_INDICES or index >= len(prs.slides):
+            continue
+        slide = prs.slides[index]
+        if _slide_has_meaningful_body(slide):
+            continue
+        text = _resolve_slide_text(proposal, index)
+        if not text:
+            text = _minimal_placeholder(index, proposal)
+        _update_slide_content(slide, text, slide_index=index)
 
 
 def _update_agenda_slide(slide: Any, proposal: dict[str, Any]) -> None:
@@ -864,18 +1231,29 @@ def render_pptx_from_template(
             continue
 
         if index in TABLE_TWO_COLUMN_SLIDES:
-            key = TABLE_TWO_COLUMN_SLIDES[index]
-            content = _coerce_text(proposal.get(key, ""))
+            content = _resolve_slide_text(proposal, index)
             _update_slide_content(slide, content, slide_index=index)
+            if not _slide_has_meaningful_body(slide) and content:
+                _update_slide_body(slide, content, slide_index=index)
             _apply_customer_substitutions(slide, proposal)
             continue
 
         if index == TABLE_COMPARISON_SLIDE_INDEX:
-            content = _coerce_text(
-                proposal.get("mobilePlatformComparison")
-                or proposal.get("technicalApproach", "")
-            )
-            _update_slide_content(slide, content, slide_index=index)
+            _update_comparison_slide(slide, proposal)
+            _apply_customer_substitutions(slide, proposal)
+            continue
+
+        if index == ARCHITECTURE_SLIDE_INDEX:
+            _update_architecture_slide(slide, proposal)
+            _apply_customer_substitutions(slide, proposal)
+            continue
+
+        if index == GOVERNANCE_SLIDE_INDEX:
+            _update_governance_slide(slide, proposal)
+            continue
+
+        if index == PROJECT_PLAN_SLIDE_INDEX:
+            _update_project_plan_slide(slide, proposal)
             _apply_customer_substitutions(slide, proposal)
             continue
 
@@ -885,16 +1263,25 @@ def render_pptx_from_template(
             continue
 
         content_key = SLIDE_CONTENT_MAP.get(index)
-        content = _coerce_text(proposal.get(content_key, "")) if content_key else ""
+        content = _resolve_slide_text(proposal, index) if content_key else ""
         if content_key:
             _purge_template_sample_text(slide)
         if content:
             _update_slide_content(slide, content, slide_index=index)
         elif content_key:
             _ensure_slide_title(slide, SLIDE_TITLES.get(index, ""))
-            _clear_template_bodies(slide)
+            placeholder = _minimal_placeholder(index, proposal)
+            _update_slide_content(slide, placeholder, slide_index=index)
 
         _apply_customer_substitutions(slide, proposal)
+
+    _backfill_sparse_content_slides(prs, proposal)
+
+    if (
+        len(prs.slides) > EMPTY_TRAILING_SLIDE_INDEX
+        and not _slide_has_meaningful_body(prs.slides[EMPTY_TRAILING_SLIDE_INDEX])
+    ):
+        _delete_slide(prs, EMPTY_TRAILING_SLIDE_INDEX)
 
     for index in _payment_milestone_slide_indices(prs):
         _delete_slide(prs, index)
