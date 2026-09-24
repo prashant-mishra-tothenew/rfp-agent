@@ -66,7 +66,7 @@ SLIDE_TITLES: dict[int, str] = {
     11: "Solutioning Highlights",
     12: "Proposed High Level Architecture",
     13: "Architecture Considerations",
-    14: "Mobile Development Platform - Comparison",
+    14: "Technology Platform Comparison",
     16: "Project Management Approach",
     17: "Project Governance Model",
     18: "Project Plan",
@@ -409,58 +409,230 @@ def _table_shapes(slide: Any) -> list[Any]:
     ]
 
 
-def _comparison_lines(proposal: dict[str, Any]) -> str:
-    raw = _coerce_text(proposal.get("mobilePlatformComparison", ""))
-    if raw and sum(1 for line in raw.split("\n") if line.count("|") >= 2) >= 2:
-        return raw
+def _proposal_corpus(proposal: dict[str, Any]) -> str:
+    parts = [
+        proposal.get("understandingOfRequirements", ""),
+        proposal.get("proposedSolution", ""),
+        proposal.get("technicalApproach", ""),
+        proposal.get("architectureOverview", ""),
+        proposal.get("executiveSummary", ""),
+        proposal.get("inScope", ""),
+        proposal.get("projectTitle", ""),
+        proposal.get("customer", ""),
+        proposal.get("_requirementsDigest", ""),
+    ]
+    sources = proposal.get("sources")
+    if isinstance(sources, dict):
+        website = sources.get("website")
+        if isinstance(website, dict):
+            parts.append(website.get("url", ""))
+            parts.append("website crawl")
+        document = sources.get("document")
+        if isinstance(document, dict):
+            parts.append(document.get("filename", ""))
+    return " ".join(_coerce_text(part) for part in parts).lower()
 
-    tech = _coerce_text(proposal.get("technicalApproach", "")).lower()
-    solution = _coerce_text(proposal.get("proposedSolution", "")).lower()
-    combined = f"{tech} {solution}"
-    if "flutter" in combined and "react" not in combined:
-        col_b, col_c = "Flutter", "React Native"
-    elif "react native" in combined or "react" in combined:
-        col_b, col_c = "React Native", "Flutter"
-    else:
-        col_b, col_c = "Recommended option", "Alternative option"
 
+def _is_mobile_engagement(proposal: dict[str, Any]) -> bool:
+    text = _proposal_corpus(proposal)
+    mobile_markers = (
+        "mobile app",
+        "ios",
+        "android",
+        "react native",
+        "flutter",
+        "app store",
+        "play store",
+        "native app",
+    )
+    return any(marker in text for marker in mobile_markers)
+
+
+def _is_website_engagement(proposal: dict[str, Any]) -> bool:
+    text = _proposal_corpus(proposal)
+    sources = proposal.get("sources")
+    has_website_source = isinstance(sources, dict) and isinstance(
+        sources.get("website"), dict
+    )
+    web_markers = (
+        "website",
+        "web portal",
+        "web application",
+        "cms",
+        "content management",
+        "public site",
+        "landing page",
+        "http",
+        "www.",
+    )
+    return has_website_source or any(marker in text for marker in web_markers)
+
+
+def _has_explicit_stack_preference(proposal: dict[str, Any]) -> bool:
+    text = _proposal_corpus(proposal)
+    stack_markers = (
+        "next.js",
+        "nextjs",
+        "drupal",
+        "wordpress",
+        "react native",
+        "flutter",
+        "angular",
+        "vue",
+        "laravel",
+        "django",
+        "spring boot",
+        "node.js",
+        "nodejs",
+        ".net",
+    )
+    return any(marker in text for marker in stack_markers)
+
+
+def _looks_like_mobile_comparison(text: str) -> bool:
+    lowered = text.lower()
+    return any(
+        token in lowered
+        for token in ("flutter", "react native", "ios", "android", "native app")
+    )
+
+
+def _website_stack_comparison_lines() -> str:
+    """Default when RFP is website-led and no tech stack is specified."""
     return "\n".join(
         [
-            f"Time to market | {col_b} | {col_c}",
-            "Native performance | High | High",
-            "Team skill fit | Based on existing engineering skills | Based on mobile specialization",
-            "UI consistency | Strong component libraries | Strong widget catalog",
-            "Integration with APIs | REST/GraphQL friendly | REST/GraphQL friendly",
-            "Maintainability | Modular architecture | Modular architecture",
-            "Recommendation | Aligns with stated RFP stack preferences | Viable alternate if skills differ",
+            "Factor | Next.js (Frontend) | Drupal (Backend)",
+            "Role | Modern SSR/SSG UI and UX delivery | CMS, content APIs, editorial workflows",
+            "Fit for websites | Fast public pages and app-like experiences | Structured pages, forms, and content types",
+            "Integration | Consumes Drupal JSON:API / GraphQL | Exposes secure content and workflow APIs",
+            "Performance | Edge-friendly rendering and caching | Scalable content delivery and access control",
+            "Team skills | TypeScript / React engineering | PHP CMS and content operations",
+            "Maintainability | Component-driven UI | Reusable content model and permissions",
+            "Recommendation | Preferred frontend when RFP is website-based | Preferred backend/CMS when no stack is stated",
         ]
     )
 
 
-def _update_comparison_slide(slide: Any, proposal: dict[str, Any]) -> None:
-    title = SLIDE_TITLES[TABLE_COMPARISON_SLIDE_INDEX]
+def _mobile_stack_comparison_lines(proposal: dict[str, Any]) -> str:
+    tech = _coerce_text(proposal.get("technicalApproach", "")).lower()
+    solution = _coerce_text(proposal.get("proposedSolution", "")).lower()
+    combined = f"{tech} {solution} {_proposal_corpus(proposal)}"
+    if "flutter" in combined and "react native" not in combined:
+        col_b, col_c = "Flutter", "React Native"
+    elif "react native" in combined:
+        col_b, col_c = "React Native", "Flutter"
+    else:
+        col_b, col_c = "React Native", "Flutter"
+
+    return "\n".join(
+        [
+            f"Factor | {col_b} | {col_c}",
+            "Time to market | Shared codebase accelerates delivery | Shared codebase accelerates delivery",
+            "Native performance | High with native bridges | High with compiled widgets",
+            "Team skill fit | Based on existing mobile engineering skills | Based on mobile specialization",
+            "UI consistency | Strong component libraries | Strong widget catalog",
+            "API integration | REST/GraphQL friendly | REST/GraphQL friendly",
+            "Maintainability | Modular architecture | Modular architecture",
+            "Recommendation | Aligns with stated mobile requirements | Viable alternate if skills differ",
+        ]
+    )
+
+
+def _comparison_slide_title(proposal: dict[str, Any]) -> str:
+    if _is_mobile_engagement(proposal) and not _is_website_engagement(proposal):
+        return "Mobile Development Platform - Comparison"
+    if _is_website_engagement(proposal) and not _is_mobile_engagement(proposal):
+        return "Web Technology Platform Comparison"
+    if _is_website_engagement(proposal) and _is_mobile_engagement(proposal):
+        return "Technology Platform Comparison"
+    return SLIDE_TITLES[TABLE_COMPARISON_SLIDE_INDEX]
+
+
+def _comparison_lines(proposal: dict[str, Any]) -> str:
+    raw = _coerce_text(proposal.get("mobilePlatformComparison", ""))
+    pipe_rows = sum(1 for line in raw.split("\n") if line.count("|") >= 2)
+    website = _is_website_engagement(proposal)
+    mobile = _is_mobile_engagement(proposal)
+
+    # Website RFPs must not keep Flutter/React Native leftovers from the template/LLM.
+    if website and not mobile:
+        if pipe_rows >= 2 and not _looks_like_mobile_comparison(raw):
+            if not raw.lower().startswith("factor"):
+                return (
+                    "Factor | Next.js (Frontend) | Drupal (Backend)\n" + raw
+                    if not _has_explicit_stack_preference(proposal)
+                    else raw
+                )
+            return raw
+        return _website_stack_comparison_lines()
+
+    if raw and pipe_rows >= 2 and not (
+        website and _looks_like_mobile_comparison(raw) and not mobile
+    ):
+        return raw
+
+    if mobile and not website:
+        return _mobile_stack_comparison_lines(proposal)
+
+    if website:
+        return _website_stack_comparison_lines()
+
+    if mobile:
+        return _mobile_stack_comparison_lines(proposal)
+
+    return _website_stack_comparison_lines()
+
+
+def _set_comparison_table(table: Any, text: str) -> bool:
+    lines = [line for line in _content_to_lines(text) if line.count("|") >= 2]
+    if not lines:
+        return False
+
+    header_parts = [part.strip() for part in lines[0].split("|")]
+    if len(header_parts) >= 3 and len(table.columns) >= 3:
+        for col_index in range(3):
+            table.cell(0, col_index).text = _truncate_text(header_parts[col_index], 40)
+
+    body = "\n".join(lines[1:] if len(lines) > 1 else lines)
+    return _update_three_column_table(table, body)
+
+
+def _force_slide_title(slide: Any, title: str) -> None:
+    if not title.strip():
+        return
+    shapes = list(_iter_text_shapes(slide))
+    title_shape = _find_title_shape(shapes)
+    if title_shape is not None:
+        title_shape.text = title
+        return
     _ensure_slide_title(slide, title)
+
+
+def _update_comparison_slide(slide: Any, proposal: dict[str, Any]) -> None:
+    title = _comparison_slide_title(proposal)
+    _force_slide_title(slide, title)
     text = _comparison_lines(proposal)
     tables = _table_shapes(slide)
     if tables:
         table = tables[0].table
-        if not _update_three_column_table(table, text):
-            _default_comparison_rows(table, proposal)
-    recommendation = _coerce_text(proposal.get("mobilePlatformComparison", ""))
-    if not recommendation:
-        recommendation = (
-            "Recommendation follows the technical approach and skills implied by the RFP requirements."
-        )
+        if not _set_comparison_table(table, text):
+            _set_comparison_table(table, _website_stack_comparison_lines())
+
+    recommendation = (
+        "Recommended for website RFPs with no stated stack: Next.js frontend + Drupal backend/CMS."
+        if _is_website_engagement(proposal) and not _is_mobile_engagement(proposal)
+        else "Recommendation follows the technical approach implied by the RFP requirements."
+    )
+
     for shape in _iter_text_shapes(slide):
         if getattr(shape, "top", 0) > 4_200_000 and _shape_char_capacity(shape) >= 80:
-            shape.text = _truncate_text(recommendation.split("\n")[-1], 220)
+            shape.text = _truncate_text(recommendation, 220)
             _apply_body_font(shape.text_frame)
             break
 
 
 def _default_comparison_rows(table: Any, proposal: dict[str, Any]) -> None:
-    lines = _content_to_lines(_comparison_lines(proposal))
-    _update_three_column_table(table, "\n".join(lines))
+    _set_comparison_table(table, _comparison_lines(proposal))
 
 
 def _update_architecture_slide(slide: Any, proposal: dict[str, Any]) -> None:
@@ -983,6 +1155,16 @@ def _enrich_proposal_defaults(proposal: dict[str, Any]) -> None:
 
     if not _coerce_text(proposal.get("mobilePlatformComparison", "")):
         proposal["mobilePlatformComparison"] = _comparison_lines(proposal)
+    elif _is_website_engagement(proposal) and not _is_mobile_engagement(proposal):
+        if _looks_like_mobile_comparison(
+            _coerce_text(proposal.get("mobilePlatformComparison", ""))
+        ):
+            proposal["mobilePlatformComparison"] = _website_stack_comparison_lines()
+        elif not _has_explicit_stack_preference(proposal):
+            # Keep LLM rows only if they already reference web stack; else default.
+            raw = _coerce_text(proposal.get("mobilePlatformComparison", "")).lower()
+            if "next" not in raw and "drupal" not in raw:
+                proposal["mobilePlatformComparison"] = _website_stack_comparison_lines()
 
     if not _coerce_text(proposal.get("projectPlan", "")):
         phases = _default_project_plan_phases(proposal)

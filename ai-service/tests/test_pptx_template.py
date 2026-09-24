@@ -184,6 +184,8 @@ def test_comparison_and_project_plan_slides_receive_content():
                 "customer": "Acme Corp",
                 "technicalApproach": "Next.js storefront | Headless CMS integration",
                 "implementationMethodology": "Discovery workshops\nAgile delivery sprints\nUAT and launch",
+                "sources": {"website": {"url": "https://example.com", "pages_crawled": 5}},
+                "understandingOfRequirements": "Public website portal with content and search.",
             },
             output,
             "rfp-plan-test",
@@ -194,6 +196,13 @@ def test_comparison_and_project_plan_slides_receive_content():
             for sh in prs.slides[14].shapes
             if sh.shape_type == MSO_SHAPE_TYPE.TABLE
         )
+        header = " ".join(
+            comparison_table.cell(0, col).text for col in range(3)
+        ).lower()
+        assert "next" in header
+        assert "drupal" in header
+        assert "flutter" not in header
+        assert "react native" not in header
         assert comparison_table.cell(1, 0).text.strip()
         assert comparison_table.cell(1, 1).text.strip()
 
@@ -209,6 +218,53 @@ def test_comparison_and_project_plan_slides_receive_content():
         )
 
 
+def test_website_rfp_rejects_mobile_comparison_defaults():
+    with tempfile.TemporaryDirectory() as tmp:
+        output = str(Path(tmp) / "proposal.pptx")
+        render_pptx_from_template(
+            {
+                "customer": "Invest India",
+                "sources": {
+                    "website": {"url": "https://www.investindia.gov.in", "pages_crawled": 12}
+                },
+                "understandingOfRequirements": "Website features for investment opportunities.",
+                "mobilePlatformComparison": (
+                    "Factor | REACT NATIVE | Flutter\n"
+                    "Platform | Web-based | Native (iOS/Android)\n"
+                    "Development | Single codebase | Separate codebases"
+                ),
+            },
+            output,
+            "rfp-web-compare",
+        )
+        slide = Presentation(output).slides[14]
+        titles = [
+            shape.text.strip()
+            for shape in slide.shapes
+            if hasattr(shape, "text_frame")
+            and shape.top < 900_000
+            and shape.text.strip()
+        ]
+        assert any("Web Technology" in title for title in titles)
+        comparison_table = next(
+            sh.table
+            for sh in slide.shapes
+            if sh.shape_type == MSO_SHAPE_TYPE.TABLE
+        )
+        header = " ".join(
+            comparison_table.cell(0, col).text for col in range(3)
+        ).lower()
+        body = " ".join(
+            comparison_table.cell(row, col).text
+            for row in range(len(comparison_table.rows))
+            for col in range(3)
+        ).lower()
+        assert "next.js" in header or "next" in header
+        assert "drupal" in header
+        assert "flutter" not in body
+        assert "react native" not in body
+
+
 def test_table_slides_keep_titles_after_footnote_clear():
     with tempfile.TemporaryDirectory() as tmp:
         output = str(Path(tmp) / "proposal.pptx")
@@ -216,6 +272,8 @@ def test_table_slides_keep_titles_after_footnote_clear():
             {
                 "customer": "Acme Corp",
                 "technicalApproach": "API Gateway | GraphQL federation layer",
+                "sources": {"website": {"url": "https://acme.example", "pages_crawled": 3}},
+                "understandingOfRequirements": "Corporate website redesign and CMS.",
             },
             output,
             "rfp-test-titles",
@@ -223,7 +281,7 @@ def test_table_slides_keep_titles_after_footnote_clear():
         prs = Presentation(output)
         for index, expected in (
             (13, "Architecture Considerations"),
-            (14, "Mobile Development Platform - Comparison"),
+            (14, "Web Technology Platform Comparison"),
         ):
             titles = [
                 shape.text.strip()

@@ -17,7 +17,10 @@ Ground every section in the supplied requirements (from uploaded documents and/o
 Use only the provided material. Do not invent capabilities. Return valid JSON only.
 Format for PowerPoint: use newline-separated bullets; keep lines under 120 characters where possible.
 For technicalApproach, include some lines as "Component | Key consideration" for architecture tables.
-For mobilePlatformComparison use 5-8 lines: "Factor | Option A | Option B" (three pipe-separated parts).
+For mobilePlatformComparison: base the comparison on the actual requirements.
+- If requirements are website/web-portal and no technology stack is stated, use columns "Next.js (Frontend)" and "Drupal (Backend)" (never Flutter/React Native).
+- Only use Flutter vs React Native when requirements clearly call for a native/mobile app.
+- Format 5-8 lines as "Factor | Option A | Option B" (three pipe-separated parts).
 For architectureOverview use short layer labels (one line each) for UI, APIs, data, integrations.
 For governanceModel use 4-6 short bullets on cadence, steering, and escalation (no long paragraphs).
 For projectPlan use 4 lines: "Phase name | weeks 1-3" (inclusive week ranges on a 15-week plan)."""
@@ -48,7 +51,7 @@ SECTION_LABELS: dict[str, str] = {
     "proposedSolution": "Proposed Solution",
     "technicalApproach": "Technical Approach",
     "architectureOverview": "Architecture Overview",
-    "mobilePlatformComparison": "Mobile Platform Comparison",
+    "mobilePlatformComparison": "Technology Platform Comparison",
     "implementationMethodology": "Implementation Methodology",
     "projectPlan": "Project Plan",
     "governanceModel": "Governance Model",
@@ -257,6 +260,14 @@ async def generate_proposal_content(
         or metadata.get("customer")
         or "Client"
     )
+    if isinstance(metadata.get("sources"), dict):
+        proposal["sources"] = metadata["sources"]
+    # Help platform-comparison heuristics when the LLM omits stack cues.
+    if requirements_digest and not _coerce_text(proposal.get("understandingOfRequirements")):
+        proposal["understandingOfRequirements"] = requirements_digest[:1500]
+    elif requirements_digest:
+        # Append digest fragment so website/mobile detection sees raw requirements.
+        proposal["_requirementsDigest"] = requirements_digest[:2000]
     return proposal
 
 
